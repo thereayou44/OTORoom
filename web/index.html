@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Lessonroom — комната для занятия</title>
+    <meta name="description" content="Видео, общая доска и запуск кода в одной вкладке. Для занятий один на один.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="mark">
+    <span class="mark__dot"></span>
+    <span class="mark__name">lessonroom</span>
+    <span class="mark__meta">видео · доска · компилятор</span>
+</header>
+
+<main class="lobby">
+
+    <section class="pitch">
+        <p class="eyebrow">комната на двоих</p>
+        <h1>Занятие,<br>а не показ экрана.</h1>
+        <p class="lede">
+            Видео, общая доска и запуск кода в одной вкладке. Ученик печатает и запускает сам —
+            вы оба смотрите на один и тот же вывод компилятора.
+        </p>
+        <dl class="facts">
+            <div>
+                <dt>Доступ</dt>
+                <dd>Ссылка и есть доступ. Регистрации нет.</dd>
+            </div>
+            <div>
+                <dt>Медиа</dt>
+                <dd>Идёт напрямую между браузерами. Сервер видео не получает.</dd>
+            </div>
+            <div>
+                <dt>Размер</dt>
+                <dd>Двое в комнате. Третий получит отказ.</dd>
+            </div>
+        </dl>
+    </section>
+
+    <section class="card" aria-labelledby="checkTitle">
+        <div class="card__head">
+            <span class="card__title" id="checkTitle">Проверка перед входом</span>
+            <span class="card__title" id="checkState">ждём доступ</span>
+        </div>
+
+        <div class="preview" id="preview" data-state="loading">
+            <video id="previewVideo" autoplay playsinline muted></video>
+            <div class="preview__fallback" id="previewFallback">Разреши доступ к камере, чтобы увидеть себя</div>
+            <div class="meter" aria-hidden="true"><i id="meterFill"></i></div>
+        </div>
+
+        <div class="devices">
+            <select id="camSelect" aria-label="Камера"><option>Камера по умолчанию</option></select>
+            <select id="micSelect" aria-label="Микрофон"><option>Микрофон по умолчанию</option></select>
+        </div>
+
+        <div class="toggles">
+            <button type="button" class="toggle" id="camToggle" aria-pressed="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+                Камера
+            </button>
+            <button type="button" class="toggle" id="micToggle" aria-pressed="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M19 10a7 7 0 0 1-14 0M12 17v5"/></svg>
+                Микрофон
+            </button>
+        </div>
+
+        <div class="field">
+            <label for="room">Название комнаты</label>
+            <input id="room" type="text" placeholder="algo-lesson" autocomplete="off"
+                   spellcheck="false" inputmode="latin" maxlength="32">
+        </div>
+
+        <button class="enter" id="enter">Войти в комнату</button>
+
+        <p class="hint">Латиница, цифры и дефис. Второй участник открывает ссылку с тем же названием — комната создаётся сама.</p>
+
+        <div class="notice" id="notice" hidden></div>
+    </section>
+
+</main>
+
+<script src="lobby.js"></script>
+</body>
+</html>
