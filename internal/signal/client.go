@@ -2,7 +2,9 @@ package signal
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/coder/websocket"
@@ -11,26 +13,62 @@ import (
 type Client struct {
 	conn   *websocket.Conn
 	buffer chan []byte
+	hub    *Hub
+	room   string
 }
 
-func NewClient(conn *websocket.Conn) *Client {
+func NewClient(conn *websocket.Conn, hub *Hub) *Client {
 	return &Client{
 		conn:   conn,
 		buffer: make(chan []byte, 32),
+		hub:    hub,
 	}
 }
 
 func (c *Client) read(ctx context.Context, cancel context.CancelFunc) {
 	defer cancel()
+	defer c.hub.Leave(c)
 
 	for {
-		_, message, err := c.conn.Read(ctx)
+		_, data, err := c.conn.Read(ctx)
 		if err != nil {
-			fmt.Println("read error:", err)
+			log.Println("соединение закрыто:", err)
 			return
 		}
 
-		c.send(message)
+		var msg Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			log.Println("не json:", err)
+			continue
+		}
+
+		switch msg.Type {
+		case TypeJoin:
+			if c.room != "" {
+				continue
+			}
+			var p joinPayload
+			if err := json.Unmarshal(msg.Payload, &p); err != nil {
+				c.sendMsg(Message{Type: TypeError, Message: "bad-payload"})
+				return
+			}
+			initiator, err := c.hub.Join(p.Room, c)
+			if err != nil {
+				c.sendMsg(Message{Type: TypeError, Message: errorCode(err)})
+				return
+			}
+			c.sendMsg(Message{Type: TypeJoined, IsInitiator: initiator})
+
+		case TypeOffer, TypeAnswer, TypeICE:
+			if c.room == "" {
+				continue
+			}
+			c.hub.Broadcast(c, data)
+
+		case TypeBye:
+			c.hub.Leave(c)
+			return
+		}
 	}
 }
 
@@ -78,4 +116,14 @@ func (c *Client) Serve(parent context.Context) {
 
 	go c.write(ctx, cancel)
 	c.read(ctx, cancel)
+}
+
+func (c *Client) sendMsg(msg Message) {
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		log.Println("не удалось сериализовать сообщение:", err)
+		return
+	}
+
+	c.send(raw)
 }

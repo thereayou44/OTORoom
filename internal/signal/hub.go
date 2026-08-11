@@ -26,11 +26,117 @@ func NewHub() *Hub {
 
 var roomNameRe = regexp.MustCompile(`^[a-z0-9-]{2,32}$`)
 
-func (r *room) Join(name string, client Client) (initiator bool, err error) {
+func (r *room) join(client *Client) bool {
+	for i, c := range r.clients {
+		if c == nil {
+			r.clients[i] = client
+			return true
+		}
+	}
+	return false
+}
+
+func (r *room) leave(client *Client) {
+	for i, c := range r.clients {
+		if c == client {
+			r.clients[i] = r.clients[len(r.clients)-1]
+		}
+	}
+}
+
+func (r *room) count() int {
+	var cnt int
+
+	for _, c := range r.clients {
+		if c != nil {
+			cnt++
+		}
+	}
+
+	return cnt
+}
+
+func (r *room) others(except *Client) []*Client {
+	var clients []*Client
+	for _, c := range r.clients {
+		if c != nil && c != except {
+			clients = append(clients, c)
+		}
+	}
+
+	return clients
+}
+
+func (h *Hub) Join(name string, client *Client) (initiator bool, err error) {
 	if !roomNameRe.MatchString(name) {
 		return false, ErrBadRoom
 	}
-	//so on.
 
-	return
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	r, ok := h.rooms[name]
+	if !ok {
+		r = &room{}
+		h.rooms[name] = r
+	}
+
+	if r.count() >= 2 {
+		h.mu.Unlock()
+		return false, ErrRoomFull
+	}
+
+	initiator = r.count() > 0
+
+	r.join(client)
+	client.room = name
+
+	peers := r.others(client)
+	h.mu.Unlock()
+
+	for _, p := range peers {
+		p.sendMsg(Message{Type: TypePeerJoined})
+	}
+
+	return initiator, nil
+}
+
+func (h *Hub) Leave(client *Client) {
+	h.mu.Lock()
+
+	name := client.room
+
+	r, ok := h.rooms[name]
+	if !ok {
+		h.mu.Unlock()
+		return
+	}
+
+	r.leave(client)
+	client.room = ""
+
+	if r.count() == 0 {
+		delete(h.rooms, name)
+	}
+
+	peers := r.others(nil)
+
+	for _, p := range peers {
+		p.sendMsg(Message{Type: TypePeerLeft})
+	}
+}
+
+func (h *Hub) Broadcast(from *Client, raw []byte) {
+	h.mu.Lock()
+	r, ok := h.rooms[from.room]
+	if !ok {
+		h.mu.Unlock()
+		return
+	}
+	peers := r.others(from)
+	h.mu.Unlock()
+
+	for _, p := range peers {
+		p.send(raw)
+	}
 }
