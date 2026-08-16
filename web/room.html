@@ -3,89 +3,101 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title>Lessonroom — комната для занятия</title>
-    <meta name="description" content="Видео, общая доска и запуск кода в одной вкладке. Для занятий один на один.">
+    <title>Комната — Lessonroom</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<header class="mark">
-    <span class="mark__dot"></span>
-    <span class="mark__name">lessonroom</span>
-    <span class="mark__meta">видео · доска · компилятор</span>
-</header>
+<div class="room">
 
-<main class="lobby">
+    <header class="topbar">
+        <div class="topbar__left">
+            <span class="state-dot" id="stateDot" data-route="none"></span>
+            <span class="roomname" id="roomName">—</span>
+        </div>
+        <span class="timer" id="timer">00:00</span>
+        <span class="route" id="route">соединяем</span>
+        <button class="chip" id="traceBtn" aria-expanded="false" aria-controls="tracePanel">трасса</button>
+    </header>
 
-    <section class="pitch">
-        <p class="eyebrow">комната на двоих</p>
-        <h1>Занятие,<br>а не показ экрана.</h1>
-        <p class="lede">
-            Видео, общая доска и запуск кода в одной вкладке. Ученик печатает и запускает сам —
-            вы оба смотрите на один и тот же вывод компилятора.
-        </p>
-        <dl class="facts">
-            <div>
-                <dt>Доступ</dt>
-                <dd>Ссылка и есть доступ. Регистрации нет.</dd>
+    <main class="stage">
+        <video id="remote" autoplay playsinline></video>
+
+        <div class="camoff" id="camOff" hidden>
+            <canvas class="camoff__wave" id="camOffWave" aria-hidden="true"></canvas>
+            <div class="camoff__text">
+                <p class="camoff__label">Камера выключена</p>
+                <p class="camoff__sub" id="camOffSub">слышно</p>
             </div>
-            <div>
-                <dt>Медиа</dt>
-                <dd>Идёт напрямую между браузерами. Сервер видео не получает.</dd>
+        </div>
+
+        <div class="waiting" id="waiting">
+            <div class="pulse" aria-hidden="true"><i></i><i></i><i></i></div>
+            <h2>Ждём второго</h2>
+            <p>Комната открыта. Отправь ссылку — тот, кто её откроет, попадёт сюда же.</p>
+            <div class="linkrow">
+                <code id="roomLink">…</code>
+                <button class="copy" id="copyBtn">Скопировать ссылку</button>
             </div>
-            <div>
-                <dt>Размер</dt>
-                <dd>Двое в комнате. Третий получит отказ.</dd>
-            </div>
-        </dl>
-    </section>
-
-    <section class="card" aria-labelledby="checkTitle">
-        <div class="card__head">
-            <span class="card__title" id="checkTitle">Проверка перед входом</span>
-            <span class="card__title" id="checkState">ждём доступ</span>
         </div>
 
-        <div class="preview" id="preview" data-state="loading">
-            <video id="previewVideo" autoplay playsinline muted></video>
-            <div class="preview__fallback" id="previewFallback">Разреши доступ к камере, чтобы увидеть себя</div>
-            <div class="meter" aria-hidden="true"><i id="meterFill"></i></div>
+        <div class="self" id="selfTile" data-cam="on">
+            <video id="local" autoplay playsinline muted></video>
+            <div class="self__off"><span>камера выключена</span></div>
         </div>
+    </main>
 
-        <div class="devices">
-            <select id="camSelect" aria-label="Камера"><option value="">Камера по умолчанию</option></select>
-            <select id="micSelect" aria-label="Микрофон"><option value="">Микрофон по умолчанию</option></select>
-        </div>
+    <footer class="controls">
+        <button class="ctl" id="micBtn" aria-pressed="true" aria-label="Микрофон" title="Микрофон">
+            <svg class="on-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9.5" y="3" width="5" height="10" rx="2.5"/>
+                <path d="M6 11a6 6 0 0 0 12 0"/>
+                <path d="M12 17v4"/>
+            </svg>
+            <svg class="off-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9.5 9.5V5.5a2.5 2.5 0 0 1 5 0V13"/>
+                <path d="M6 11a6 6 0 0 0 9.4 4.9M18 11v.4"/>
+                <path d="M12 17v4"/>
+                <path d="M4 4l16 16"/>
+            </svg>
+        </button>
 
-        <div class="toggles">
-            <button type="button" class="toggle" id="camToggle" aria-pressed="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
-                Камера
-            </button>
-            <button type="button" class="toggle" id="micToggle" aria-pressed="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M19 10a7 7 0 0 1-14 0M12 17v5"/></svg>
-                Микрофон
-            </button>
-        </div>
+        <button class="ctl" id="camBtn" aria-pressed="true" aria-label="Камера" title="Камера">
+            <svg class="on-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2.5" y="6" width="13" height="12" rx="2.5"/>
+                <path d="M15.5 11l5-3.2v8.4l-5-3.2z"/>
+            </svg>
+            <svg class="off-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9.5 6h3.5a2.5 2.5 0 0 1 2.5 2.5v1.2"/>
+                <path d="M15.5 14.5v1a2.5 2.5 0 0 1-2.5 2.5H5a2.5 2.5 0 0 1-2.5-2.5v-7A2.5 2.5 0 0 1 5 6h.5"/>
+                <path d="M20.5 7.8v8.4l-5-3.2"/>
+                <path d="M4 4l16 16"/>
+            </svg>
+        </button>
 
-        <div class="field">
-            <label for="room">Название комнаты</label>
-            <input id="room" type="text" placeholder="algo-lesson" autocomplete="off"
-                   spellcheck="false" inputmode="latin" maxlength="32">
-        </div>
+        <button class="ctl ctl--hang" id="hangBtn" aria-label="Выйти из комнаты" title="Выйти">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9.5a14 14 0 0 1 20 0v3.2a1.8 1.8 0 0 1-1.9 1.8l-3-.3a1.8 1.8 0 0 1-1.6-1.5l-.3-1.9a12 12 0 0 0-6.4 0l-.3 1.9a1.8 1.8 0 0 1-1.6 1.5l-3 .3A1.8 1.8 0 0 1 2 12.7z"/></svg>
+        </button>
+    </footer>
 
-        <button class="enter" id="enter">Войти в комнату</button>
+</div>
 
-        <p class="hint">Латиница, цифры и дефис. Второй участник открывает ссылку с тем же названием — комната создаётся сама.</p>
+<aside class="trace" id="tracePanel" data-open="false" aria-label="Трасса соединения">
+    <div class="trace__head">
+        <span class="trace__title">Трасса соединения</span>
+        <button class="trace__close" id="traceClose" aria-label="Закрыть трассу">×</button>
+    </div>
+    <div class="trace__log" id="traceLog"></div>
+    <div class="trace__foot">
+        Здесь видно, на каком шаге встало соединение. Подробнее — <code>chrome://webrtc-internals</code>.
+    </div>
+</aside>
 
-        <div class="notice" id="notice" hidden></div>
-    </section>
+<div class="banner" id="banner" data-show="false" role="status"></div>
 
-</main>
-
-<script src="lobby.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

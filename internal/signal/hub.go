@@ -39,7 +39,7 @@ func (r *room) join(client *Client) bool {
 func (r *room) leave(client *Client) {
 	for i, c := range r.clients {
 		if c == client {
-			r.clients[i] = r.clients[len(r.clients)-1]
+			r.clients[i] = nil
 		}
 	}
 }
@@ -73,7 +73,6 @@ func (h *Hub) Join(name string, client *Client) (initiator bool, err error) {
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	r, ok := h.rooms[name]
 	if !ok {
@@ -120,6 +119,7 @@ func (h *Hub) Leave(client *Client) {
 	}
 
 	peers := r.others(nil)
+	h.mu.Unlock()
 
 	for _, p := range peers {
 		p.sendMsg(Message{Type: TypePeerLeft})

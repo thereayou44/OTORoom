@@ -1,43 +1,45 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-	"github.com/coder/websocket"
-	"github.com/thereayou44/OTORoom.git/internal/signal"
+	"github.com/thereayou44/OTORoom.git/internal/config"
+	"github.com/thereayou44/OTORoom.git/internal/httpapi"
+	sig "github.com/thereayou44/OTORoom.git/internal/signal"
 )
 
 func main() {
-	mux := http.NewServeMux()
+	cfg := config.Load()
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("ok"))
-	})
+	hub := sig.NewHub()
+	api := httpapi.New(cfg, hub)
+	srv := httpapi.NewHTTPServer(cfg.Addr, api.Handler())
 
-	hub := signal.NewHub()
+	go func() {
+		log.Println("listening http://localhost" + cfg.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal("server down: ", err)
+		}
+	}()
 
-	mux.HandleFunc("GET /ws", func(w http.ResponseWriter, r *http.Request) {
-		handleWS(w, r, hub)
-	})
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
 
-	mux.Handle("GET /", http.FileServer(http.Dir("web")))
+	log.Println("stopping...")
 
-	log.Println("listening http://localhost:8080")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
-		log.Fatal(err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Println("connections aren't closed properly:", err)
 	}
-}
-
-func handleWS(w http.ResponseWriter, r *http.Request, h *signal.Hub) {
-	conn, err := websocket.Accept(w, r, nil)
-	if err != nil {
-		log.Println("апгрейд не удался:", err)
-		return
-	}
-	defer conn.CloseNow()
-	conn.SetReadLimit(64 << 10)
-
-	c := signal.NewClient(conn, h)
-	c.Serve(r.Context())
+	log.Println("stopped")
 }

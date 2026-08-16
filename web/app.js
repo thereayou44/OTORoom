@@ -21,6 +21,7 @@
 
     const el = {
         remote: $('remote'), local: $('local'), selfTile: $('selfTile'),
+        camOff: $('camOff'), camOffSub: $('camOffSub'), camOffWave: $('camOffWave'),
         waiting: $('waiting'), roomName: $('roomName'), roomLink: $('roomLink'),
         copyBtn: $('copyBtn'), timer: $('timer'), route: $('route'),
         stateDot: $('stateDot'), micBtn: $('micBtn'), camBtn: $('camBtn'),
@@ -47,6 +48,189 @@
 
     let retry = 0, retryTimer = 0;
     let statsTimer = 0, clockTimer = 0, startedAt = 0;
+
+    let remoteCam = true, remoteMic = true;
+    let meta = null;                       // data channel для состояния камеры/микрофона
+    let vizCtx = null, vizAnalyser = null, vizRaf = 0, vizLevel = 0;
+
+    /* Состояние медиа передаём отдельным data channel, а не через сигналинг:
+       это данные между браузерами, серверу про них знать незачем. Событие
+       track.mute для этого не годится — Chrome при enabled=false продолжает
+       слать чёрные кадры, и трек остаётся размьюченным. */
+    function sendMediaState() {
+        if (!meta || meta.readyState !== 'open') return;
+        const cam = el.camBtn.getAttribute('aria-pressed') === 'true';
+        const mic = el.micBtn.getAttribute('aria-pressed') === 'true';
+        try { meta.send(JSON.stringify({ cam, mic })); } catch {}
+    }
+
+    function wireMeta(ch) {
+        meta = ch;
+        ch.addEventListener('open', () => { trace('канал состояния открыт', 'ok'); sendMediaState(); });
+        ch.addEventListener('close', () => trace('канал состояния закрыт', 'warn'));
+        ch.addEventListener('error', () => trace('ошибка канала состояния', 'err'));
+        ch.addEventListener('message', (e) => {
+            try {
+                const s = JSON.parse(e.data);
+                if (typeof s.cam === 'boolean') remoteCam = s.cam;
+                if (typeof s.mic === 'boolean') remoteMic = s.mic;
+                trace(`собеседник: камера ${remoteCam ? 'вкл' : 'выкл'}, микрофон ${remoteMic ? 'вкл' : 'выкл'}`);
+                stopBlackProbe(); // канал работает — резерв больше не нужен
+                paintRemoteState();
+            } catch {}
+        });
+    }
+
+    function paintRemoteState() {
+        const show = !!pc && !remoteCam;
+
+        el.camOff.hidden = !show;
+        el.camOff.dataset.silent = String(!remoteMic);
+        el.camOffSub.textContent = remoteMic ? 'слышно' : 'микрофон тоже выключен';
+
+        if (show) startViz();
+        else stopViz();
+    }
+
+    /* Резерв на случай, если канал состояния не открылся: раз в секунду
+       семплим крошечный кадр из чужого видео и смотрим яркость. Чёрный кадр
+       несколько раз подряд = камера выключена. Дёшево (192 пикселя) и работает
+       всегда, независимо от data channel. */
+    let probeTimer = 0, darkStreak = 0, probeCvs = null;
+
+    function startBlackProbe() {
+        if (probeTimer) return;
+        probeCvs = document.createElement('canvas');
+        probeCvs.width = 16;
+        probeCvs.height = 12;
+        const pctx = probeCvs.getContext('2d', { willReadFrequently: true });
+
+        probeTimer = setInterval(() => {
+            const v = el.remote;
+            if (!v.videoWidth || v.readyState < 2) return;
+            try {
+                pctx.drawImage(v, 0, 0, 16, 12);
+                const d = pctx.getImageData(0, 0, 16, 12).data;
+                let sum = 0;
+                for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+                const bright = sum / (d.length / 4) / 3;
+
+                const dark = bright < 8;
+                darkStreak = dark ? darkStreak + 1 : 0;
+
+                const guess = darkStreak >= 2;
+                if (guess !== !remoteCam) {
+                    remoteCam = !guess;
+                    trace('камера собеседника ' + (guess ? 'выключена' : 'включена') + ' (по кадру)');
+                    paintRemoteState();
+                }
+            } catch {}
+        }, 1000);
+    }
+
+    function stopBlackProbe() {
+        clearInterval(probeTimer);
+        probeTimer = 0;
+        darkStreak = 0;
+    }
+
+    /* ---------- волны по голосу собеседника ---------- */
+
+    function startViz() {
+        if (vizRaf) return;
+
+        const stream = el.remote.srcObject;
+        const track = stream && stream.getAudioTracks()[0];
+
+        if (track && !vizAnalyser) {
+            try {
+                if (!vizCtx) vizCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (vizCtx.state === 'suspended') vizCtx.resume();
+                const src = vizCtx.createMediaStreamSource(new MediaStream([track]));
+                vizAnalyser = vizCtx.createAnalyser();
+                vizAnalyser.fftSize = 512;
+                vizAnalyser.smoothingTimeConstant = 0.8;
+                src.connect(vizAnalyser); // к destination не подключаем — звук идёт через <video>
+            } catch (e) {
+                trace('визуализация звука недоступна: ' + e.message, 'warn');
+            }
+        }
+
+        const cvs = el.camOffWave;
+        const ctx = cvs.getContext('2d');
+        const buf = vizAnalyser ? new Uint8Array(vizAnalyser.frequencyBinCount) : null;
+        const LINES = 7;
+        const start = performance.now();
+
+        const fit = () => {
+            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            cvs.width = cvs.clientWidth * dpr;
+            cvs.height = cvs.clientHeight * dpr;
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        };
+        fit();
+        window.addEventListener('resize', fit);
+        cvs._fit = fit;
+
+        const loop = (now) => {
+            const w = cvs.clientWidth, h = cvs.clientHeight;
+            const t = (now - start) / 1000;
+
+            // Громкость: берём нижнюю треть спектра — там речь.
+            let target = 0;
+            if (buf && vizAnalyser && remoteMic) {
+                vizAnalyser.getByteFrequencyData(buf);
+                const n = Math.floor(buf.length * 0.35);
+                let sum = 0;
+                for (let i = 0; i < n; i++) sum += buf[i];
+                target = Math.min(1, (sum / n / 255) * 3.2);
+            }
+            // Инерция, чтобы волна дышала, а не дёргалась покадрово.
+            vizLevel += (target - vizLevel) * 0.12;
+
+            const idle = 0.10;                      // волна живёт даже в тишине
+            const amp = (idle + vizLevel * 0.9) * h * 0.3;
+
+            ctx.clearRect(0, 0, w, h);
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.lineWidth = 1.15;
+
+            for (let k = 0; k < LINES; k++) {
+                const p = k / (LINES - 1);            // 0..1 по пучку линий
+                const hue = 188 + p * 78;             // бирюза → фиолет
+                const alpha = 0.5 - Math.abs(p - 0.5) * 0.45;
+
+                ctx.beginPath();
+                for (let x = 0; x <= w; x += 3) {
+                    const u = x / w;
+                    const env = Math.pow(Math.sin(Math.PI * u), 1.6);  // затухание к краям
+                    const y = h / 2
+                        + Math.sin(u * 7.5 + t * 1.5 + k * 0.5) * amp * env
+                        + Math.sin(u * 3.1 - t * 0.9 + k * 1.1) * amp * env * 0.45
+                        + (p - 0.5) * amp * env * 0.55;
+                    x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+                }
+                ctx.strokeStyle = remoteMic
+                    ? `hsla(${hue}, 85%, 62%, ${alpha})`
+                    : `hsla(215, 18%, 52%, ${alpha * 0.5})`;
+                ctx.shadowBlur = remoteMic ? 14 : 0;
+                ctx.shadowColor = `hsla(${hue}, 90%, 60%, .5)`;
+                ctx.stroke();
+            }
+
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.shadowBlur = 0;
+            vizRaf = requestAnimationFrame(loop);
+        };
+        vizRaf = requestAnimationFrame(loop);
+    }
+
+    function stopViz() {
+        cancelAnimationFrame(vizRaf);
+        vizRaf = 0;
+        const cvs = el.camOffWave;
+        if (cvs && cvs._fit) { window.removeEventListener('resize', cvs._fit); cvs._fit = null; }
+    }
 
     /* ---------- вывод ---------- */
 
@@ -273,12 +457,20 @@
         pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 2 });
         trace('создано соединение');
 
+        // Канал состояния: инициатор создаёт, второй принимает через ondatachannel.
+        // Создаём ДО createOffer, иначе он не попадёт в SDP.
+        if (initiator) wireMeta(pc.createDataChannel('meta'));
+        pc.addEventListener('datachannel', (e) => {
+            if (e.channel.label === 'meta') wireMeta(e.channel);
+        });
+
         localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
 
         pc.addEventListener('track', (e) => {
             el.remote.srcObject = e.streams[0];
             trace('пришёл поток: ' + e.track.kind, 'ok');
             showWaiting(false);
+            if (e.track.kind === 'video') startBlackProbe();
         });
 
         pc.addEventListener('icecandidate', (e) => {
@@ -302,6 +494,7 @@
             if (s === 'connected') { startClock(); startStats(); }
             if (s === 'failed') setRoute('down', 'не собралось');
             if (s === 'disconnected') setRoute('down', 'связь прерывается');
+            paintRemoteState();
         });
 
         pc.addEventListener('negotiationneeded', () => {
@@ -326,6 +519,13 @@
         stopStats();
         stopClock();
         pendingIce = [];
+        remoteCam = true;
+        remoteMic = true;
+        meta = null;
+        vizAnalyser = null;
+        stopViz();
+        stopBlackProbe();
+        el.camOff.hidden = true;
         if (pc) {
             pc.getSenders().forEach((s) => { try { s.track && s.track.stop && 0; } catch {} });
             pc.close();
@@ -384,12 +584,14 @@
         const on = el.micBtn.getAttribute('aria-pressed') !== 'true';
         applyTrackState('audio', on, el.micBtn);
         trace('микрофон ' + (on ? 'включён' : 'выключен'));
+        sendMediaState();
     });
 
     el.camBtn.addEventListener('click', () => {
         const on = el.camBtn.getAttribute('aria-pressed') !== 'true';
         applyTrackState('video', on, el.camBtn);
         trace('камера ' + (on ? 'включена' : 'выключена'));
+        sendMediaState();
     });
 
     el.hangBtn.addEventListener('click', leave);

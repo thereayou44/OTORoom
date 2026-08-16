@@ -19,7 +19,7 @@ const (
 
 type Message struct {
 	Type        string          `json:"type"`
-	IsInitiator bool            `json:"isinitiator"`
+	IsInitiator bool            `json:"initiator,omitempty"`
 	Message     string          `json:"message"`
 	Payload     json.RawMessage `json:"payload"`
 }
