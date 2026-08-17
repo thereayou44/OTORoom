@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"embed"
 	"errors"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -10,16 +12,27 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/thereayou44/OTORoom.git/internal/config"
 	"github.com/thereayou44/OTORoom.git/internal/httpapi"
 	sig "github.com/thereayou44/OTORoom.git/internal/signal"
 )
 
+//go:embed web/*
+var web embed.FS
+
 func main() {
+	_ = godotenv.Load()
 	cfg := config.Load()
 
 	hub := sig.NewHub()
-	api := httpapi.New(cfg, hub)
+
+	sub, err := fs.Sub(web, "web")
+	if err != nil {
+		log.Fatal(err)
+	}
+	api := httpapi.New(cfg, hub, sub)
+
 	srv := httpapi.NewHTTPServer(cfg.Addr, api.Handler())
 
 	go func() {

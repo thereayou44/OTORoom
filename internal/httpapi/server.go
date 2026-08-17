@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"io/fs"
 	"log"
 	"net/http"
 	"time"
@@ -14,10 +15,11 @@ import (
 type Server struct {
 	hub *signal.Hub
 	cfg config.Config
+	web fs.FS
 }
 
-func New(cfg config.Config, hub *signal.Hub) *Server {
-	return &Server{cfg: cfg, hub: hub}
+func New(cfg config.Config, hub *signal.Hub, web fs.FS) *Server {
+	return &Server{cfg: cfg, hub: hub, web: web}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -26,7 +28,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/ice", s.handleICE)
 	mux.HandleFunc("GET /ws", s.handleWS)
-	mux.Handle("GET /", noCache(http.FileServer(http.Dir(s.cfg.WebDir))))
+	mux.Handle("GET /", noCache(http.FileServer(http.FS(s.web))))
 
 	return mux
 }
