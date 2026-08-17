@@ -1,0 +1,13 @@
+# секреты
+.env
+
+# сборка
+/OTORoom
+*.exe
+
+# IDE
+.idea/
+.vscode/
+
+# ОС
+.DS_Store
