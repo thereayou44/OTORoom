@@ -1,4 +1,4 @@
-/* Lessonroom — страница входа.
+/* OTO — страница входа.
    Задача одна: убедиться, что камера и микрофон работают, ДО начала занятия.
    Выбранные устройства и состояние тумблеров кладём в sessionStorage —
    комната их подхватит. */
@@ -36,7 +36,34 @@
        настройками — только https или localhost. Говорим об этом сразу,
        а не после того как пользователь нажал «войти». */
     if (!window.isSecureContext) {
-        notice('Камера включается только по HTTPS или на localhost. Сейчас страница открыта по обычному httpapi, доступа к устройствам не будет.');
+        notice('Камера включается только по HTTPS или на localhost. Сейчас страница открыта по обычному http, доступа к устройствам не будет.');
+    }
+
+    /* Без явных constraints браузер выдаёт что-то вроде 640x480.
+       ideal означает «дай столько, если можешь» — если камера не тянет,
+       получим меньше, но getUserMedia не упадёт (в отличие от exact). */
+    const VIDEO_WANT = {
+        width:     { ideal: 1280 },
+        height:    { ideal: 720 },
+        frameRate: { ideal: 30 },
+    };
+
+    const AUDIO_WANT = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl:  true,
+    };
+
+    function videoConstraints(deviceId) {
+        const c = { ...VIDEO_WANT };
+        if (deviceId) c.deviceId = { exact: deviceId };
+        return c;
+    }
+
+    function audioConstraints(deviceId) {
+        const c = { ...AUDIO_WANT };
+        if (deviceId) c.deviceId = { exact: deviceId };
+        return c;
     }
 
     async function openStream() {
@@ -46,8 +73,8 @@
         const micId = el.micSelect.value;
 
         const constraints = {
-            video: camOn ? (camId ? { deviceId: { exact: camId } } : true) : false,
-            audio: micOn ? (micId ? { deviceId: { exact: micId } } : true) : false,
+            video: camOn ? videoConstraints(camId) : false,
+            audio: micOn ? audioConstraints(micId) : false,
         };
 
         if (!constraints.video && !constraints.audio) {
@@ -62,7 +89,16 @@
             el.video.srcObject = stream;
             el.preview.dataset.state = camOn ? 'live' : 'off';
             el.fallback.textContent = 'Камера выключена';
-            el.checkState.textContent = camOn ? 'видно и слышно' : 'только звук';
+
+            // Показываем, что камера реально выдала — ideal не гарантирует запрошенное.
+            const vt = stream.getVideoTracks()[0];
+            if (camOn && vt) {
+                const s = vt.getSettings();
+                el.checkState.textContent = s.height ? `${s.width}×${s.height}` : 'видно и слышно';
+            } else {
+                el.checkState.textContent = camOn ? 'видно и слышно' : 'только звук';
+            }
+
             notice('');
             await fillDevices();
             if (micOn) startMeter();
@@ -145,7 +181,7 @@
             el.room.focus();
             return;
         }
-        sessionStorage.setItem('lessonroom.prefs', JSON.stringify({
+        sessionStorage.setItem('oto.prefs', JSON.stringify({
             camOn, micOn,
             camId: el.camSelect.value || null,
             micId: el.micSelect.value || null,

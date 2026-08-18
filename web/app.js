@@ -1,4 +1,4 @@
-/* Lessonroom — клиент комнаты.
+/* OTO — клиент комнаты.
  *
  * Протокол (JSON, поле type):
  *   клиент → сервер : join, offer, answer, ice, bye
@@ -265,13 +265,13 @@
     function readPrefs() {
         try {
             return Object.assign({ camOn: true, micOn: true, camId: null, micId: null },
-                JSON.parse(sessionStorage.getItem('lessonroom.prefs') || '{}'));
+                JSON.parse(sessionStorage.getItem('oto.prefs') || '{}'));
         } catch { return { camOn: true, micOn: true, camId: null, micId: null }; }
     }
 
     el.roomName.textContent = roomId;
     el.roomLink.textContent = location.href;
-    document.title = roomId + ' — Lessonroom';
+    document.title = roomId + ' — OTO';
 
     async function loadIce() {
         try {
@@ -292,16 +292,33 @@
     }
 
     async function openMedia() {
-        const constraints = {
-            video: prefs.camOn ? (prefs.camId ? { deviceId: { ideal: prefs.camId } } : true) : false,
-            audio: prefs.micOn ? (prefs.micId ? { deviceId: { ideal: prefs.micId } } : true) : false,
-        };
-        if (!constraints.video && !constraints.audio) constraints.audio = true;
+        const video = prefs.camOn ? {
+            width:     { ideal: 1280 },
+            height:    { ideal: 720 },
+            frameRate: { ideal: 30 },
+            ...(prefs.camId ? { deviceId: { ideal: prefs.camId } } : {}),
+        } : false;
+
+        const audio = prefs.micOn ? {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl:  true,
+            ...(prefs.micId ? { deviceId: { ideal: prefs.micId } } : {}),
+        } : false;
+
+        const constraints = { video, audio };
+        if (!video && !audio) constraints.audio = true;
 
         try {
             localStream = await navigator.mediaDevices.getUserMedia(constraints);
             el.local.srcObject = localStream;
-            trace('камера и микрофон получены', 'ok');
+            const vt = localStream.getVideoTracks()[0];
+            if (vt) {
+                const s = vt.getSettings();
+                trace(`камера: ${s.width}×${s.height} @ ${Math.round(s.frameRate || 0)}fps`, 'ok');
+            } else {
+                trace('микрофон получен', 'ok');
+            }
         } catch (err) {
             trace('нет доступа к устройствам: ' + err.name, 'err');
             banner('Браузер не дал доступ к камере или микрофону. Разреши доступ и обнови страницу.', 0);
@@ -465,6 +482,7 @@
         });
 
         localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+        tuneBitrate();
 
         pc.addEventListener('track', (e) => {
             el.remote.srcObject = e.streams[0];
@@ -502,6 +520,32 @@
         });
 
         return pc;
+    }
+
+    /* Дефолтный потолок битрейта у WebRTC консервативный. Поднимаем его —
+       это именно потолок, а не обязательство: при плохой сети браузер всё
+       равно снизит качество сам. Плюс просим сохранять чёткость в ущерб
+       плавности: на занятии важнее читать код на экране, чем гладкое движение. */
+    async function tuneBitrate() {
+        if (!pc) return;
+        for (const sender of pc.getSenders()) {
+            if (!sender.track) continue;
+            try {
+                const params = sender.getParameters();
+                if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+
+                if (sender.track.kind === 'video') {
+                    params.encodings[0].maxBitrate = 2_500_000;   // 2.5 Мбит/с
+                    params.degradationPreference = 'maintain-resolution';
+                } else {
+                    params.encodings[0].maxBitrate = 64_000;      // 64 кбит/с, с запасом для Opus
+                }
+
+                await sender.setParameters(params);
+            } catch (e) {
+                trace('не удалось настроить битрейт: ' + e.message, 'warn');
+            }
+        }
     }
 
     async function makeOffer(options) {
@@ -552,9 +596,18 @@
                 const remote = stats.get(pair.remoteCandidateId);
                 const relayed = (local && local.candidateType === 'relay') ||
                     (remote && remote.candidateType === 'relay');
-                if (relayed) setRoute('relay', 'через TURN');
-                else if (local && local.candidateType === 'host') setRoute('direct', 'напрямую, локальная сеть');
-                else setRoute('direct', 'напрямую');
+
+                // Реальное входящее качество — полезно, когда картинка выглядит мыльной.
+                let quality = '';
+                stats.forEach((r) => {
+                    if (r.type === 'inbound-rtp' && r.kind === 'video' && r.frameWidth) {
+                        quality = ` · ${r.frameWidth}×${r.frameHeight}`;
+                    }
+                });
+
+                if (relayed) setRoute('relay', 'через TURN' + quality);
+                else if (local && local.candidateType === 'host') setRoute('direct', 'локальная сеть' + quality);
+                else setRoute('direct', 'напрямую' + quality);
             } catch {}
         }, 3000);
     }
