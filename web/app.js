@@ -20,13 +20,23 @@
     const $ = (id) => document.getElementById(id);
 
     const el = {
-        remote: $('remote'), local: $('local'), selfTile: $('selfTile'),
+        stage: $('stage'),
+        remote: $('remote'), local: $('local'), localScreen: $('localScreen'),
+        tileRemote: $('tileRemote'), tileSelf: $('tileSelf'), tileScreen: $('tileScreen'),
         camOff: $('camOff'), camOffSub: $('camOffSub'), camOffWave: $('camOffWave'),
+        sharingTag: $('sharingTag'),
         waiting: $('waiting'), roomName: $('roomName'), roomLink: $('roomLink'),
         copyBtn: $('copyBtn'), timer: $('timer'), route: $('route'),
         stateDot: $('stateDot'), micBtn: $('micBtn'), camBtn: $('camBtn'),
-        hangBtn: $('hangBtn'), traceBtn: $('traceBtn'), traceClose: $('traceClose'),
-        tracePanel: $('tracePanel'), traceLog: $('traceLog'), banner: $('banner'),
+        hangBtn: $('hangBtn'),
+        menuBtn: $('menuBtn'), menuPop: $('menuPop'), menuDot: $('menuDot'),
+        miScreen: $('miScreen'), miScreenNote: $('miScreenNote'),
+        miChat: $('miChat'), miChatBadge: $('miChatBadge'),
+        miTrace: $('miTrace'),
+        chatPanel: $('chatPanel'), chatClose: $('chatClose'), chatLog: $('chatLog'),
+        chatForm: $('chatForm'), chatInput: $('chatInput'),
+        tracePanel: $('tracePanel'), traceClose: $('traceClose'), traceLog: $('traceLog'),
+        banner: $('banner'),
     };
 
     const roomId = (new URLSearchParams(location.search).get('room') || '').toLowerCase();
@@ -49,7 +59,286 @@
     let retry = 0, retryTimer = 0;
     let statsTimer = 0, clockTimer = 0, startedAt = 0;
 
-    let remoteCam = true, remoteMic = true;
+    let remoteCam = true, remoteMic = true, remoteScreen = false;
+    let screenStream = null;
+
+    /* ---------- демонстрация экрана ---------- */
+
+    /* Что сейчас уходит в эфир по видео: экран важнее камеры. */
+    function currentVideoTrack() {
+        if (screenStream) return screenStream.getVideoTracks()[0] || null;
+        return localStream ? (localStream.getVideoTracks()[0] || null) : null;
+    }
+
+    /* Проставляет актуальные треки в отправители. Отправители существуют
+       всегда (см. ensurePeer), поэтому смена камера ↔ экран ↔ ничего
+       не требует нового offer/answer. */
+    async function syncSenders() {
+        if (!pc) return;
+        const audio = localStream ? (localStream.getAudioTracks()[0] || null) : null;
+        const video = currentVideoTrack();
+
+        for (const t of pc.getTransceivers()) {
+            const kind = t.receiver.track && t.receiver.track.kind;
+            try {
+                if (kind === 'audio') await t.sender.replaceTrack(audio);
+                else if (kind === 'video') await t.sender.replaceTrack(video);
+            } catch (e) {
+                trace('не удалось подставить трек: ' + e.message, 'warn');
+            }
+        }
+    }
+
+    async function startScreen() {
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getDisplayMedia({
+                // Экран с кодом: разрешение важно, плавность нет. 10 fps достаточно,
+                // зато весь битрейт уходит на чёткость текста.
+                video: { frameRate: { ideal: 10, max: 15 } },
+                audio: false,
+            });
+        } catch (e) {
+            // NotAllowedError здесь — это просто «пользователь закрыл диалог», не ошибка.
+            if (e.name !== 'NotAllowedError') trace('не удалось начать показ: ' + e.name, 'warn');
+            return;
+        }
+
+        screenStream = stream;
+        const track = stream.getVideoTracks()[0];
+        el.localScreen.srcObject = stream;
+
+        // Пользователь может остановить показ системной кнопкой браузера,
+        // минуя наш интерфейс — тогда трек завершится сам.
+        track.addEventListener('ended', () => stopScreen());
+
+        // Если соединения ещё нет — ничего страшного: трек подставится сам,
+        // когда второй участник войдёт и соединение соберётся.
+        await syncSenders();
+
+        setMenuItem(el.miScreen, true);
+        el.miScreenNote.textContent = 'идёт показ — нажми, чтобы остановить';
+        applyLayout();
+        tuneBitrate();
+        sendMediaState();
+        refreshMenuDot();
+
+        const s = track.getSettings();
+        trace(`показ экрана: ${s.width}×${s.height}`, 'ok');
+    }
+
+    async function stopScreen() {
+        if (!screenStream) return;
+
+        screenStream.getTracks().forEach((t) => t.stop());
+        screenStream = null;
+        el.localScreen.srcObject = null;
+
+        await syncSenders();   // вернули камеру на место
+
+        setMenuItem(el.miScreen, false);
+        el.miScreenNote.textContent = 'весь экран, окно или вкладка';
+        applyLayout();
+        tuneBitrate();
+        sendMediaState();
+        refreshMenuDot();
+        trace('показ экрана остановлен');
+    }
+
+    const isSharing = () => screenStream !== null;
+
+    /* ---------- раскладка ---------- */
+
+    /* Три состояния сцены:
+         solo      — собеседник во весь экран, своя камера плиткой в углу;
+         мой экран — экран справа, камера собеседника и своя колонкой слева;
+         его экран — его экран справа, своя камера слева.
+       Плитки не переезжают по DOM — им меняются классы grid-областей,
+       иначе <video> дёргалось бы при каждом перемещении узла. */
+    function applyLayout() {
+        const mine = isSharing();
+        const theirs = remoteScreen && !mine;
+
+        if (mine) {
+            el.stage.dataset.layout = 'split';
+            el.tileScreen.hidden = false;
+            el.tileScreen.className = 'tile tile--main';
+            el.tileRemote.className = 'tile tile--railA';
+            el.tileSelf.className = 'tile tile--self tile--railB';
+        } else if (theirs) {
+            el.stage.dataset.layout = 'split';
+            el.tileScreen.hidden = true;
+            el.tileRemote.className = 'tile tile--main';
+            el.tileSelf.className = 'tile tile--self tile--railA';
+        } else {
+            el.stage.dataset.layout = 'solo';
+            el.tileScreen.hidden = true;
+            el.tileRemote.className = 'tile tile--main';
+            el.tileSelf.className = 'tile tile--self';
+        }
+
+        el.sharingTag.hidden = !theirs;
+    }
+
+    /* ---------- меню ---------- */
+
+    function setMenuItem(item, on) {
+        item.dataset.on = String(on);
+    }
+
+    function openMenu(open) {
+        el.menuPop.hidden = !open;
+        el.menuBtn.setAttribute('aria-expanded', String(open));
+    }
+
+    const menuOpen = () => !el.menuPop.hidden;
+
+    /* Панели взаимоисключающие: открытие одной закрывает другую. */
+    function openPanel(which) {
+        const chat = which === 'chat';
+        const trace_ = which === 'trace';
+
+        el.chatPanel.dataset.open = String(chat);
+        el.tracePanel.dataset.open = String(trace_);
+        setMenuItem(el.miChat, chat);
+        setMenuItem(el.miTrace, trace_);
+
+        if (chat) {
+            el.miChatBadge.hidden = true;
+            refreshMenuDot();
+            el.chatInput.focus();
+        }
+    }
+
+    const panelOpen = () =>
+        el.chatPanel.dataset.open === 'true' || el.tracePanel.dataset.open === 'true';
+
+    // Точка на кнопке меню: есть непрочитанное или что-то активно.
+    function refreshMenuDot() {
+        el.menuDot.hidden = el.miChatBadge.hidden && !isSharing();
+    }
+
+    el.menuBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openMenu(!menuOpen());
+    });
+
+    el.miScreen.addEventListener('click', () => {
+        openMenu(false);
+        isSharing() ? stopScreen() : startScreen();
+    });
+
+    el.miChat.addEventListener('click', () => {
+        openMenu(false);
+        openPanel(el.chatPanel.dataset.open === 'true' ? null : 'chat');
+    });
+
+    el.miTrace.addEventListener('click', () => {
+        openMenu(false);
+        openPanel(el.tracePanel.dataset.open === 'true' ? null : 'trace');
+    });
+
+    el.chatClose.addEventListener('click', () => openPanel(null));
+    el.traceClose.addEventListener('click', () => openPanel(null));
+
+    // Клик мимо меню закрывает его.
+    document.addEventListener('click', (e) => {
+        if (menuOpen() && !el.menuPop.contains(e.target)) openMenu(false);
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        if (menuOpen()) openMenu(false);
+        else if (panelOpen()) openPanel(null);
+    });
+
+    // На мобильных getDisplayMedia обычно нет — прячем пункт, а не показываем
+    // неработающий.
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        el.miScreen.hidden = true;
+    }
+
+    /* ---------- чат ---------- */
+
+    let chat = null;
+    let chatEmpty = true;
+
+    function wireChat(ch) {
+        chat = ch;
+        ch.addEventListener('open', () => trace('чат подключён', 'ok'));
+        ch.addEventListener('message', (e) => {
+            let text;
+            try { text = JSON.parse(e.data).text; } catch { return; }
+            if (typeof text !== 'string' || !text) return;
+            addMessage(text, false);
+            if (el.chatPanel.dataset.open !== 'true') {
+                el.miChatBadge.hidden = false;
+                refreshMenuDot();
+            }
+        });
+    }
+
+    function sendChat() {
+        const text = el.chatInput.value.trim();
+        if (!text) return;
+        if (!chat || chat.readyState !== 'open') {
+            banner('Чат заработает, когда соединение установится.');
+            return;
+        }
+        try {
+            chat.send(JSON.stringify({ text }));
+            addMessage(text, true);
+            el.chatInput.value = '';
+            autoGrow();
+        } catch (e) {
+            banner('Не удалось отправить сообщение.');
+        }
+    }
+
+    const URL_RE = /(https?:\/\/[^\s<>"]+)/g;
+
+    /* Текст собеседника вставляется ТОЛЬКО как текстовые узлы, ссылки
+       собираются через createElement. Через innerHTML сюда приехал бы
+       любой HTML, который он захочет — это XSS в чистом виде. */
+    function renderText(container, text) {
+        let last = 0;
+        text.replace(URL_RE, (url, _g, offset) => {
+            if (offset > last) container.append(document.createTextNode(text.slice(last, offset)));
+            const a = document.createElement('a');
+            a.href = url;
+            a.textContent = url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            container.append(a);
+            last = offset + url.length;
+            return url;
+        });
+        if (last < text.length) container.append(document.createTextNode(text.slice(last)));
+    }
+
+    function addMessage(text, mine) {
+        if (chatEmpty) {
+            el.chatLog.innerHTML = '';
+            chatEmpty = false;
+        }
+
+        const div = document.createElement('div');
+        div.className = 'msg ' + (mine ? 'msg--mine' : 'msg--theirs');
+        renderText(div, text);
+
+        const time = document.createElement('span');
+        time.className = 'msg__time';
+        time.textContent = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        div.append(time);
+
+        el.chatLog.append(div);
+        el.chatLog.scrollTop = el.chatLog.scrollHeight;
+    }
+
+    function autoGrow() {
+        el.chatInput.style.height = 'auto';
+        el.chatInput.style.height = Math.min(el.chatInput.scrollHeight, 140) + 'px';
+    }
     let meta = null;                       // data channel для состояния камеры/микрофона
     let vizCtx = null, vizAnalyser = null, vizRaf = 0, vizLevel = 0;
 
@@ -61,7 +350,7 @@
         if (!meta || meta.readyState !== 'open') return;
         const cam = el.camBtn.getAttribute('aria-pressed') === 'true';
         const mic = el.micBtn.getAttribute('aria-pressed') === 'true';
-        try { meta.send(JSON.stringify({ cam, mic })); } catch {}
+        try { meta.send(JSON.stringify({ cam, mic, screen: isSharing() })); } catch {}
     }
 
     function wireMeta(ch) {
@@ -74,7 +363,9 @@
                 const s = JSON.parse(e.data);
                 if (typeof s.cam === 'boolean') remoteCam = s.cam;
                 if (typeof s.mic === 'boolean') remoteMic = s.mic;
-                trace(`собеседник: камера ${remoteCam ? 'вкл' : 'выкл'}, микрофон ${remoteMic ? 'вкл' : 'выкл'}`);
+                remoteScreen = s.screen === true;
+                trace(`собеседник: камера ${remoteCam ? 'вкл' : 'выкл'}, микрофон ${remoteMic ? 'вкл' : 'выкл'}` +
+                    (remoteScreen ? ', показывает экран' : ''));
                 stopBlackProbe(); // канал работает — резерв больше не нужен
                 paintRemoteState();
             } catch {}
@@ -82,11 +373,15 @@
     }
 
     function paintRemoteState() {
-        const show = !!pc && !remoteCam;
+        // Во время показа экрана заглушка «камера выключена» не нужна —
+        // картинка есть, просто это не лицо.
+        const show = !!pc && !remoteCam && !remoteScreen;
 
         el.camOff.hidden = !show;
         el.camOff.dataset.silent = String(!remoteMic);
-        el.camOffSub.textContent = remoteMic ? 'слышно' : 'микрофон тоже выключен';
+        el.camOffSub.textContent = remoteMic ? 'слышно' : 'микрофон выключен';
+
+        applyLayout();
 
         if (show) startViz();
         else stopViz();
@@ -333,7 +628,7 @@
         const tracks = kind === 'audio' ? localStream.getAudioTracks() : localStream.getVideoTracks();
         tracks.forEach((t) => { t.enabled = on; });
         btn.setAttribute('aria-pressed', String(on && tracks.length > 0));
-        if (kind === 'video') el.selfTile.dataset.cam = (on && tracks.length) ? 'on' : 'off';
+        if (kind === 'video') el.tileSelf.dataset.cam = (on && tracks.length) ? 'on' : 'off';
     }
 
     /* ---------- сигналинг ---------- */
@@ -401,9 +696,13 @@
                 trace('получен offer');
                 await ensurePeer();
                 await pc.setRemoteDescription(payloadOf(msg));
+                // Трансиверы созданы описанием от инициатора — теперь есть куда
+                // подставлять свои треки.
+                await syncSenders();
                 await flushIce();
                 await pc.setLocalDescription(await pc.createAnswer());
                 send('answer', pc.localDescription);
+                tuneBitrate();
                 trace('отправлен answer');
                 break;
 
@@ -474,15 +773,27 @@
         pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 2 });
         trace('создано соединение');
 
-        // Канал состояния: инициатор создаёт, второй принимает через ondatachannel.
-        // Создаём ДО createOffer, иначе он не попадёт в SDP.
-        if (initiator) wireMeta(pc.createDataChannel('meta'));
+        // Два канала: meta возит состояние камеры и микрофона, chat — сообщения.
+        // Инициатор создаёт оба до createOffer, второй принимает по label.
+        if (initiator) {
+            wireMeta(pc.createDataChannel('meta'));
+            wireChat(pc.createDataChannel('chat'));
+        }
         pc.addEventListener('datachannel', (e) => {
             if (e.channel.label === 'meta') wireMeta(e.channel);
+            if (e.channel.label === 'chat') wireChat(e.channel);
         });
 
-        localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
-        tuneBitrate();
+        /* Трансиверы заводим явно, а не через addTrack. Разница принципиальная:
+           addTrack создаёт отправителя только когда трек есть, а нам нужен
+           отправитель ВСЕГДА — тогда включить камеру или начать показ экрана
+           можно в любой момент простой подменой трека, без нового offer/answer.
+           Инициатор создаёт их сам; отвечающему они появятся из offer. */
+        if (initiator) {
+            pc.addTransceiver('audio', { direction: 'sendrecv' });
+            pc.addTransceiver('video', { direction: 'sendrecv' });
+            syncSenders();
+        }
 
         pc.addEventListener('track', (e) => {
             el.remote.srcObject = e.streams[0];
@@ -509,7 +820,7 @@
         pc.addEventListener('connectionstatechange', () => {
             const s = pc.connectionState;
             trace('соединение: ' + s, s === 'connected' ? 'ok' : s === 'failed' ? 'err' : null);
-            if (s === 'connected') { startClock(); startStats(); }
+            if (s === 'connected') { startClock(); startStats(); tuneBitrate(); }
             if (s === 'failed') setRoute('down', 'не собралось');
             if (s === 'disconnected') setRoute('down', 'связь прерывается');
             paintRemoteState();
@@ -535,7 +846,14 @@
                 if (!params.encodings || !params.encodings.length) params.encodings = [{}];
 
                 if (sender.track.kind === 'video') {
-                    params.encodings[0].maxBitrate = 2_500_000;   // 2.5 Мбит/с
+                    if (isSharing()) {
+                        // Экран: текст должен читаться, движения почти нет.
+                        params.encodings[0].maxBitrate = 3_000_000;
+                        params.encodings[0].maxFramerate = 12;
+                    } else {
+                        params.encodings[0].maxBitrate = 2_500_000;
+                        delete params.encodings[0].maxFramerate;
+                    }
                     params.degradationPreference = 'maintain-resolution';
                 } else {
                     params.encodings[0].maxBitrate = 64_000;      // 64 кбит/с, с запасом для Opus
@@ -565,7 +883,10 @@
         pendingIce = [];
         remoteCam = true;
         remoteMic = true;
+        remoteScreen = false;
         meta = null;
+        chat = null;
+        applyLayout();
         vizAnalyser = null;
         stopViz();
         stopBlackProbe();
@@ -644,7 +965,9 @@
         const on = el.camBtn.getAttribute('aria-pressed') !== 'true';
         applyTrackState('video', on, el.camBtn);
         trace('камера ' + (on ? 'включена' : 'выключена'));
-        sendMediaState();
+        // Во время показа экрана камера в эфир не идёт, но состояние запомнится
+        // и применится, когда показ закончится.
+        if (!isSharing()) sendMediaState();
     });
 
     el.hangBtn.addEventListener('click', leave);
@@ -653,6 +976,7 @@
         leaving = true;
         send('bye');
         teardownPeer();
+        if (screenStream) screenStream.getTracks().forEach((t) => t.stop());
         if (localStream) localStream.getTracks().forEach((t) => t.stop());
         if (ws) ws.close();
         location.href = 'index.html?room=' + encodeURIComponent(roomId);
@@ -672,13 +996,20 @@
         }
     });
 
-    const toggleTrace = (open) => {
-        el.tracePanel.dataset.open = String(open);
-        el.traceBtn.setAttribute('aria-expanded', String(open));
-    };
-    el.traceBtn.addEventListener('click', () => toggleTrace(el.tracePanel.dataset.open !== 'true'));
-    el.traceClose.addEventListener('click', () => toggleTrace(false));
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleTrace(false); });
+    el.chatForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        sendChat();
+    });
+
+    // Enter отправляет, Shift+Enter переносит строку — как везде.
+    el.chatInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendChat();
+        }
+    });
+
+    el.chatInput.addEventListener('input', autoGrow);
 
     /* ---------- старт ---------- */
 
