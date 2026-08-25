@@ -682,7 +682,15 @@
                 initiator = !!(msg.initiator ?? msg.payload?.initiator);
                 trace(`вошли в комнату, роль: ${initiator ? 'инициатор' : 'ожидающий'}`, 'ok');
                 setRoute('none', initiator ? 'начинаем переговоры' : 'ждём второго');
-                if (initiator) { peerPresent = true; showWaiting(false); await makeOffer(); }
+                if (initiator) {
+                    peerPresent = true;
+                    showWaiting(false);
+                    // ensurePeer заводит трансиверы, они порождают negotiationneeded,
+                    // и offer уходит оттуда. Явный вызов — страховка на случай, если
+                    // событие уже отработало вхолостую.
+                    await ensurePeer();
+                    await makeOffer();
+                }
                 break;
 
             case 'peer-joined':
@@ -700,7 +708,7 @@
                 // подставлять свои треки.
                 await syncSenders();
                 await flushIce();
-                await pc.setLocalDescription(await pc.createAnswer());
+                await pc.setLocalDescription();
                 send('answer', pc.localDescription);
                 tuneBitrate();
                 trace('отправлен answer');
@@ -792,7 +800,7 @@
         if (initiator) {
             pc.addTransceiver('audio', { direction: 'sendrecv' });
             pc.addTransceiver('video', { direction: 'sendrecv' });
-            syncSenders();
+            await syncSenders();
         }
 
         pc.addEventListener('track', (e) => {
@@ -811,9 +819,9 @@
             trace('ICE: ' + pc.iceConnectionState,
                 pc.iceConnectionState === 'failed' ? 'err' : null);
             if (pc.iceConnectionState === 'failed') {
+                // restartIce сам поднимет negotiationneeded — новый offer уйдёт оттуда.
                 trace('перезапускаем ICE', 'warn');
                 pc.restartIce();
-                if (initiator) makeOffer({ iceRestart: true });
             }
         });
 
@@ -827,7 +835,7 @@
         });
 
         pc.addEventListener('negotiationneeded', () => {
-            if (initiator && peerPresent) makeOffer();
+            if (initiator) makeOffer();
         });
 
         return pc;
@@ -866,14 +874,29 @@
         }
     }
 
-    async function makeOffer(options) {
-        await ensurePeer();
+    /* makeOffer может быть вызван из двух мест сразу: явно при входе в комнату
+       и событием negotiationneeded от addTransceiver. Два параллельных
+       createOffer расходятся по порядку m-line, и setLocalDescription падает
+       с «order of m-lines doesn't match». Отсюда флаг и проверка состояния.
+
+       setLocalDescription() без аргумента — современная форма: браузер сам
+       собирает offer или answer по текущему состоянию, без разрыва между
+       созданием описания и его применением. */
+    let makingOffer = false;
+
+    async function makeOffer() {
+        if (!pc || makingOffer) return;
+        if (pc.signalingState !== 'stable') return;
+
         try {
-            await pc.setLocalDescription(await pc.createOffer(options));
+            makingOffer = true;
+            await pc.setLocalDescription();
             send('offer', pc.localDescription);
             trace('отправлен offer');
         } catch (e) {
             trace('не удалось создать offer: ' + e.message, 'err');
+        } finally {
+            makingOffer = false;
         }
     }
 
