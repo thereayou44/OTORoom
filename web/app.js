@@ -1,19 +1,3 @@
-/* OTO — клиент комнаты.
- *
- * Протокол (JSON, поле type):
- *   клиент → сервер : join, offer, answer, ice, bye
- *   сервер → клиент : joined {initiator}, peer-joined, peer-left, error {message}
- *
- * Сервер пересылает offer/answer/ice не разбирая — payload для него непрозрачен.
- *
- * Три места, где WebRTC обычно ломается, и как здесь с ними:
- *   1. ICE-кандидаты приходят раньше setRemoteDescription → очередь pendingIce.
- *   2. Оба стороны шлют offer одновременно (glare) → offer шлёт только initiator,
- *      флаг приходит от сервера в joined.
- *   3. Вебсокет рвётся на мобильном интернете → переподключение с ростом паузы
- *      и повторный join.
- */
-
 (() => {
     'use strict';
 
@@ -81,6 +65,11 @@
         for (const t of pc.getTransceivers()) {
             const kind = t.receiver.track && t.receiver.track.kind;
             try {
+                /* У отвечающего трансиверы рождаются из чужого offer с направлением
+                   recvonly — «только принимаю». replaceTrack прикрепляет трек, но
+                   направление не меняет: answer уходит со словами «я только смотрю»,
+                   и собеседник не получает ни звука, ни видео. Поднимаем явно. */
+                if (t.direction === 'recvonly') t.direction = 'sendrecv';
                 if (kind === 'audio') await t.sender.replaceTrack(audio);
                 else if (kind === 'video') await t.sender.replaceTrack(video);
             } catch (e) {
@@ -615,9 +604,21 @@
                 trace('микрофон получен', 'ok');
             }
         } catch (err) {
-            trace('нет доступа к устройствам: ' + err.name, 'err');
-            banner('Браузер не дал доступ к камере или микрофону. Разреши доступ и обнови страницу.', 0);
-            localStream = new MediaStream();     // всё равно входим — сможем видеть и слышать второго
+            trace('нет доступа к камере: ' + err.name, 'err');
+
+            // Камера не далась (частый случай на Mac: браузеру не разрешили её
+            // в системных настройках) — прежде чем входить пустым, пробуем
+            // получить хотя бы микрофон, чтобы звук всё-таки был.
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                el.local.srcObject = localStream;
+                trace('микрофон получен, камеры нет', 'warn');
+                banner('Камера недоступна — звонок пойдёт только со звуком. На Mac проверь: Настройки → Конфиденциальность → Камера.', 0);
+            } catch (err2) {
+                trace('нет доступа и к микрофону: ' + err2.name, 'err');
+                banner('Браузер не дал доступ ни к камере, ни к микрофону. Разреши доступ и обнови страницу.', 0);
+                localStream = new MediaStream();   // всё равно входим — сможем видеть и слышать второго
+            }
         }
 
         applyTrackState('audio', prefs.micOn, el.micBtn);
@@ -808,6 +809,16 @@
             trace('пришёл поток: ' + e.track.kind, 'ok');
             showWaiting(false);
             if (e.track.kind === 'video') startBlackProbe();
+
+            // autoplay иногда декодирует поток, но не запускает показ —
+            // получается «звонок соединился», а картинки и звука нет.
+            // play() без явного вызова браузер иногда просто не делает.
+            el.remote.play().catch((err) => {
+                trace('автовоспроизведение заблокировано: ' + err.name, 'warn');
+                banner('Нажми в любое место экрана, чтобы включить видео и звук.');
+                const resume = () => { el.remote.play(); document.removeEventListener('click', resume); };
+                document.addEventListener('click', resume, { once: true });
+            });
         });
 
         pc.addEventListener('icecandidate', (e) => {
@@ -851,7 +862,10 @@
             if (!sender.track) continue;
             try {
                 const params = sender.getParameters();
-                if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+                // Пустой encodings означает «согласование ещё не дошло до этого
+                // отправителя». Массив принадлежит браузеру, пересоздавать его
+                // нельзя (Read-only field) — просто заходим позже, после connected.
+                if (!params.encodings || !params.encodings.length) continue;
 
                 if (sender.track.kind === 'video') {
                     if (isSharing()) {
