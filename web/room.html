@@ -24,7 +24,6 @@
 
     <main class="stage" id="stage" data-layout="solo">
 
-        <!-- Собеседник: камера или, когда он делится, его экран -->
         <div class="tile tile--main" id="tileRemote">
             <video id="remote" autoplay playsinline></video>
 
@@ -39,13 +38,11 @@
             <span class="tile__tag" id="sharingTag" hidden>экран собеседника</span>
         </div>
 
-        <!-- Мой экран: появляется только на время показа -->
         <div class="tile" id="tileScreen" hidden>
             <video id="localScreen" autoplay playsinline muted></video>
             <span class="tile__tag tile__tag--own">ваш экран</span>
         </div>
 
-        <!-- Моя камера -->
         <div class="tile tile--self" id="tileSelf" data-cam="on">
             <video id="local" autoplay playsinline muted></video>
             <div class="tile__off"><span>камера выключена</span></div>
@@ -122,7 +119,6 @@
           </span>
                     <span class="menu__body">
             <span class="menu__label">Чат</span>
-            <span class="menu__note">ссылки и заметки на время звонка</span>
           </span>
                 </button>
 

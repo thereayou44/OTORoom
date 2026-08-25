@@ -27,16 +27,10 @@
         el.notice.hidden = !text;
     }
 
-    /* getUserMedia живёт только в защищённом контексте. Это не лечится
-       настройками — только https или localhost. Говорим об этом сразу,
-       а не после того как пользователь нажал «войти». */
     if (!window.isSecureContext) {
         notice('Камера включается только по HTTPS или на localhost. Сейчас страница открыта по обычному http, доступа к устройствам не будет.');
     }
 
-    /* Без явных constraints браузер выдаёт что-то вроде 640x480.
-       ideal означает «дай столько, если можешь» — если камера не тянет,
-       получим меньше, но getUserMedia не упадёт (в отличие от exact). */
     const VIDEO_WANT = {
         width:     { ideal: 1280 },
         height:    { ideal: 720 },
@@ -85,7 +79,6 @@
             el.preview.dataset.state = camOn ? 'live' : 'off';
             el.fallback.textContent = 'Камера выключена';
 
-            // Показываем, что камера реально выдала — ideal не гарантирует запрошенное.
             const vt = stream.getVideoTracks()[0];
             if (camOn && vt) {
                 const s = vt.getSettings();
@@ -121,8 +114,6 @@
         }
     }
 
-    /* Метки устройств браузер отдаёт только после первого успешного
-       getUserMedia — поэтому список наполняем уже после запроса доступа. */
     async function fillDevices() {
         const devices = await navigator.mediaDevices.enumerateDevices();
         fill(el.camSelect, devices.filter((d) => d.kind === 'videoinput'), 'Камера');
@@ -203,7 +194,6 @@
     el.room.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
     el.room.addEventListener('input', () => notice(''));
 
-    // Если пришли по ссылке вида index.html?room=xxx — подставляем название.
     const preset = new URLSearchParams(location.search).get('room');
     if (preset) el.room.value = preset.toLowerCase();
 
