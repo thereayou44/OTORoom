@@ -146,5 +146,33 @@ const settle = (ms = 60) => new Promise(r => setTimeout(r, ms));
   pa.destroy(); pb.destroy();
 }
 
+// 8. Картинка на доске: бинарные данные внутри Y.Map доезжают целыми
+{
+    console.log('\n8. бинарные данные фигуры-картинки');
+    const [ca, cb] = makePair({ latency: 15 });
+    const da = new Y.Doc(), db = new Y.Doc();
+    const pa = new DataChannelProvider(da, ca), pb = new DataChannelProvider(db, cb);
+    await settle(80);
+
+    const bytes = new Uint8Array(150 * 1024);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 31 + 7) & 0xff;
+
+    const m = new Y.Map();
+    m.set('type', 'image');
+    m.set('x1', 320); m.set('y1', 180); m.set('w', 640); m.set('h', 360);
+    m.set('data', bytes);
+    da.getArray('board').push([m]);
+    await settle(300);
+
+    const shape = db.getArray('board').get(0);
+    const got = shape && shape.get('data');
+    ok(got instanceof Uint8Array && got.length === bytes.length,
+       `байты доехали (${got && got.length} из ${bytes.length})`);
+    ok(!!got && got[0] === bytes[0] && got[77777] === bytes[77777] && got[got.length - 1] === bytes[bytes.length - 1],
+       'содержимое не побилось');
+    ok(shape.get('w') === 640, 'размеры на месте');
+    pa.destroy(); pb.destroy();
+}
+
 console.log(failed === 0 ? '\nВСЕ ТЕСТЫ ПРОШЛИ' : `\nПРОВАЛОВ: ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

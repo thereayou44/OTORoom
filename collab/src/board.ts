@@ -31,13 +31,21 @@ export interface BoardOptions {
 }
 
 interface ShapeData {
-  type: Exclude<Tool, 'eraser'>;
+  type: Exclude<Tool, 'eraser'> | 'image';
   color: string;
   width: number;
   points?: number[];
   x1?: number; y1?: number; x2?: number; y2?: number;
   text?: string;
+  /** image: сжатый JPEG и размеры на холсте */
+  data?: Uint8Array;
+  w?: number; h?: number;
 }
+
+/** Не раздуваем общий документ: он живёт в памяти и целиком передаётся
+    при каждом переподключении. */
+const IMG_MAX_BYTES = 900 * 1024;
+const IMG_MAX_SIDE = 1280;
 
 export function createBoard(opts: BoardOptions): BoardHandle {
   const { doc, awareness, container } = opts;
@@ -107,13 +115,44 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     ctx.strokeRect(0, 0, BOARD_W, BOARD_H);
 
     for (const item of shapes) {
-      drawShape(item.toJSON() as unknown as ShapeData);
+      drawShape(item.toJSON() as unknown as ShapeData, item);
     }
 
     ctx.restore();
   }
 
-  function drawShape(s: ShapeData) {
+  // Декодированные картинки. Ключ — сама Y.Map фигуры: она стабильна
+  // между перерисовками, а при удалении фигуры запись отпадёт сама.
+  const bitmaps = new WeakMap<Y.Map<unknown>, ImageBitmap | 'pending' | 'error'>();
+
+  function drawImage(s: ShapeData, item: Y.Map<unknown>) {
+    const { x1 = 0, y1 = 0, w = 0, h = 0 } = s;
+    const cached = bitmaps.get(item);
+
+    if (cached instanceof ImageBitmap) {
+      ctx.drawImage(cached, x1, y1, w, h);
+      return;
+    }
+    if (cached === undefined && s.data) {
+      bitmaps.set(item, 'pending');
+      createImageBitmap(new Blob([s.data as BlobPart], { type: 'image/jpeg' }))
+        .then((b) => { bitmaps.set(item, b); render(); })
+        .catch(() => { bitmaps.set(item, 'error'); });
+    }
+    // Пока декодируется (или если байты битые) — пунктирная рамка-заглушка.
+    ctx.save();
+    ctx.strokeStyle = 'rgba(122,167,224,.5)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(x1, y1, w, h);
+    ctx.restore();
+  }
+
+  function drawShape(s: ShapeData, item: Y.Map<unknown>) {
+    if (s.type === 'image') {
+      drawImage(s, item);
+      return;
+    }
     ctx.strokeStyle = s.color;
     ctx.fillStyle = s.color;
     ctx.lineWidth = s.width;
@@ -188,7 +227,10 @@ export function createBoard(opts: BoardOptions): BoardHandle {
 
       const { x1 = 0, y1 = 0, x2 = 0, y2 = 0 } = s;
 
-      if (s.type === 'line' || s.type === 'arrow') {
+      if (s.type === 'image') {
+        const { w = 0, h = 0 } = s;
+        if (x >= x1 - slack && x <= x1 + w + slack && y >= y1 - slack && y <= y1 + h + slack) return i;
+      } else if (s.type === 'line' || s.type === 'arrow') {
         if (distToSegment(x, y, x1, y1, x2, y2) <= slack) return i;
       } else if (s.type === 'rect' || s.type === 'ellipse') {
         const l = Math.min(x1, x2) - slack, r = Math.max(x1, x2) + slack;
@@ -298,6 +340,71 @@ export function createBoard(opts: BoardOptions): BoardHandle {
   canvas.addEventListener('pointerup', onPointerUp);
   canvas.addEventListener('pointercancel', onPointerUp);
 
+  // ---------- вставка картинок ----------
+
+  /** Перекодирует картинку в JPEG не длиннее maxSide по большой стороне.
+      JPEG не умеет прозрачность, поэтому подкладываем белый фон. */
+  async function encodeJpeg(bmp: ImageBitmap, maxSide: number, quality: number): Promise<Uint8Array | null> {
+    const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * k));
+    const h = Math.max(1, Math.round(bmp.height * k));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const cx = c.getContext('2d');
+    if (!cx) return null;
+    cx.fillStyle = '#fff';
+    cx.fillRect(0, 0, w, h);
+    cx.drawImage(bmp, 0, 0, w, h);
+    const blob = await new Promise<Blob | null>((r) => c.toBlob(r, 'image/jpeg', quality));
+    return blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+  }
+
+  async function imageToShape(file: File): Promise<Y.Map<unknown> | null> {
+    const bmp = await createImageBitmap(file).catch(() => null);
+    if (!bmp) return null;
+
+    let bytes = await encodeJpeg(bmp, IMG_MAX_SIDE, 0.82);
+    // Слишком тяжёлая (фотография с деталями) — пробуем жёстче.
+    if (bytes && bytes.byteLength > IMG_MAX_BYTES) bytes = await encodeJpeg(bmp, 900, 0.7);
+    const aspect = bmp.width / bmp.height;
+    bmp.close();
+    if (!bytes || bytes.byteLength > IMG_MAX_BYTES) return null;
+
+    // Вписываем в 60% холста; лёгкий сдвиг, чтобы вставки подряд не легли стопкой.
+    let w = BOARD_W * 0.6, h = w / aspect;
+    if (h > BOARD_H * 0.6) { h = BOARD_H * 0.6; w = h * aspect; }
+    const jitter = () => (Math.random() - 0.5) * 60;
+    const m = new Y.Map();
+    m.set('type', 'image');
+    m.set('color', '#ffffff');
+    m.set('width', 1);
+    m.set('x1', Math.round((BOARD_W - w) / 2 + jitter()));
+    m.set('y1', Math.round((BOARD_H - h) / 2 + jitter()));
+    m.set('w', Math.round(w));
+    m.set('h', Math.round(h));
+    m.set('data', bytes);
+    return m;
+  }
+
+  async function onPaste(e: ClipboardEvent) {
+    // Панель доски скрыта — вставка не наша.
+    if (container.offsetParent === null) return;
+    // Пользователь вставляет в текстовое поле (чат, редактор) — не перехватываем.
+    const t = e.target as HTMLElement | null;
+    if (t && t.closest && t.closest('input, textarea, [contenteditable]')) return;
+
+    const items = e.clipboardData ? Array.from(e.clipboardData.items) : [];
+    const file = items.find((i) => i.type.startsWith('image/'))?.getAsFile();
+    if (!file) return;
+
+    e.preventDefault();
+    const shape = await imageToShape(file);
+    if (shape) shapes.push([shape]);
+    else console.warn('доска: картинка не влезла даже после сжатия — не вставлена');
+  }
+
+  document.addEventListener('paste', onPaste);
+
   // Перерисовываем на любое изменение — своё и чужое.
   const observer = () => render();
   shapes.observeDeep(observer);
@@ -317,6 +424,7 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     undo() { undoManager.undo(); },
     redo() { undoManager.redo(); },
     destroy() {
+      document.removeEventListener('paste', onPaste);
       shapes.unobserveDeep(observer);
       undoManager.destroy();
       ro.disconnect();
