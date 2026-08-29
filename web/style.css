@@ -1127,3 +1127,29 @@ input, select { font: inherit; color: inherit; }
   .pane__title { display: none; }
   .tools__width { width: 54px; }
 }
+
+/* ---------- картинки в чате ---------- */
+
+.msg__img {
+  display: block;
+  max-width: 100%;
+  border-radius: 8px;
+  cursor: zoom-in;
+  margin-bottom: 2px;
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgba(4, 8, 14, .88);
+  cursor: zoom-out;
+}
+
+.lightbox img {
+  max-width: 92vw;
+  max-height: 92vh;
+  border-radius: 10px;
+}

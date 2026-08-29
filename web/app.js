@@ -319,15 +319,132 @@
         chat = ch;
         ch.addEventListener('open', () => trace('чат подключён', 'ok'));
         ch.addEventListener('message', (e) => {
-            let text;
-            try { text = JSON.parse(e.data).text; } catch { return; }
+            let msg;
+            try { msg = JSON.parse(e.data); } catch { return; }
+
+            if (typeof msg.img === 'string') { receiveImagePart(msg); return; }
+
+            const text = msg.text;
             if (typeof text !== 'string' || !text) return;
             addMessage(text, false);
-            if (el.chatPanel.dataset.open !== 'true') {
-                el.miChatBadge.hidden = false;
-                refreshMenuDot();
-            }
+            noteUnread();
         });
+    }
+
+    function noteUnread() {
+        if (el.chatPanel.dataset.open !== 'true') {
+            el.miChatBadge.hidden = false;
+            refreshMenuDot();
+        }
+    }
+
+    /* ---------- картинки в чате ----------
+
+       Картинка уходит по chat-каналу как base64, порезанный на куски по 16 КБ:
+       канал надёжный и упорядоченный, поэтому сборка — просто конкатенация.
+       Перед отправкой пережимаем в JPEG, как на доске: канал не для мегабайтов. */
+
+    let imgRx = {};   // id -> { parts: [], got: 0, total }
+
+    function receiveImagePart(msg) {
+        const { img: id, seq, total, part } = msg;
+        if (typeof part !== 'string' || !Number.isInteger(seq) || !Number.isInteger(total)
+            || total < 1 || total > 100 || seq < 0 || seq >= total) return;
+
+        const rx = imgRx[id] || (imgRx[id] = { parts: new Array(total), got: 0, total });
+        if (rx.total !== total || rx.parts[seq] !== undefined) return;
+        rx.parts[seq] = part;
+        rx.got++;
+
+        if (rx.got === rx.total) {
+            delete imgRx[id];
+            addImageMessage('data:image/jpeg;base64,' + rx.parts.join(''), false);
+            noteUnread();
+        }
+    }
+
+    /* Пережимает файл в JPEG-dataURL не длиннее ~1.2 млн символов (≈900 КБ). */
+    async function compressChatImage(file) {
+        const bmp = await createImageBitmap(file).catch(() => null);
+        if (!bmp) return null;
+        const encode = (maxSide, q) => {
+            const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+            const c = document.createElement('canvas');
+            c.width = Math.max(1, Math.round(bmp.width * k));
+            c.height = Math.max(1, Math.round(bmp.height * k));
+            const cx = c.getContext('2d');
+            cx.fillStyle = '#fff';                    // JPEG не умеет прозрачность
+            cx.fillRect(0, 0, c.width, c.height);
+            cx.drawImage(bmp, 0, 0, c.width, c.height);
+            return c.toDataURL('image/jpeg', q);
+        };
+        let url = encode(1280, 0.82);
+        if (url.length > 1_200_000) url = encode(900, 0.7);
+        bmp.close();
+        return url.length > 1_200_000 ? null : url;
+    }
+
+    async function sendChatImage(file) {
+        if (!chat || chat.readyState !== 'open') {
+            banner('Чат заработает, когда соединение установится.');
+            return;
+        }
+        const url = await compressChatImage(file);
+        if (!url) {
+            banner('Картинка не влезла даже после сжатия — отправь её другим способом.');
+            return;
+        }
+        const b64 = url.slice(url.indexOf(',') + 1);
+        const CHUNK = 16 * 1024;
+        const total = Math.ceil(b64.length / CHUNK);
+        const id = Math.random().toString(36).slice(2, 10);
+        try {
+            for (let i = 0; i < total; i++) {
+                chat.send(JSON.stringify({ img: id, seq: i, total, part: b64.substr(i * CHUNK, CHUNK) }));
+            }
+            addImageMessage(url, true);
+        } catch {
+            banner('Не удалось отправить картинку.');
+        }
+    }
+
+    function showLightbox(src) {
+        const ov = document.createElement('div');
+        ov.className = 'lightbox';
+        const img = document.createElement('img');
+        img.src = src;
+        img.alt = '';
+        ov.append(img);
+        ov.addEventListener('click', () => ov.remove());
+        document.addEventListener('keydown', function esc(e) {
+            if (e.key === 'Escape') { ov.remove(); document.removeEventListener('keydown', esc); }
+        });
+        document.body.append(ov);
+    }
+
+    function addImageMessage(src, mine) {
+        if (chatEmpty) {
+            el.chatLog.innerHTML = '';
+            chatEmpty = false;
+        }
+
+        const div = document.createElement('div');
+        div.className = 'msg ' + (mine ? 'msg--mine' : 'msg--theirs');
+
+        const img = document.createElement('img');
+        img.className = 'msg__img';
+        img.src = src;
+        img.alt = 'картинка';
+        img.addEventListener('click', () => showLightbox(src));
+        div.append(img);
+
+        const time = document.createElement('span');
+        time.className = 'msg__time';
+        time.textContent = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        div.append(time);
+
+        el.chatLog.append(div);
+        el.chatLog.scrollTop = el.chatLog.scrollHeight;
     }
 
     /* ---------- редактор и доска ---------- */
@@ -1141,6 +1258,7 @@
         remoteScreen = false;
         meta = null;
         chat = null;
+        imgRx = {};
         // Совместная работа живёт на data channel этого соединения — умирает с ним.
         if (collab) { collab.destroy(); collab = null; }
         editor = null;
@@ -1302,6 +1420,15 @@
     });
 
     el.chatInput.addEventListener('input', autoGrow);
+
+    // Ctrl+V картинки в поле чата отправляет её собеседнику.
+    el.chatInput.addEventListener('paste', (e) => {
+        const items = e.clipboardData ? Array.from(e.clipboardData.items) : [];
+        const file = items.find((i) => i.type.startsWith('image/'))?.getAsFile();
+        if (!file) return;
+        e.preventDefault();
+        sendChatImage(file);
+    });
 
     /* ---------- старт ---------- */
 
