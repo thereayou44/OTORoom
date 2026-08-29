@@ -36,7 +36,7 @@
     let iceServers = FALLBACK_ICE;
 
     let initiator = false;
-    let pendingIce = [];
+    let pendingIce = [];          // кандидаты до setRemoteDescription
     let peerPresent = false;
     let leaving = false;
 
@@ -46,11 +46,17 @@
     let remoteCam = true, remoteMic = true, remoteScreen = false;
     let screenStream = null;
 
+    /* ---------- демонстрация экрана ---------- */
+
+    /* Что сейчас уходит в эфир по видео: экран важнее камеры. */
     function currentVideoTrack() {
         if (screenStream) return screenStream.getVideoTracks()[0] || null;
         return localStream ? (localStream.getVideoTracks()[0] || null) : null;
     }
 
+    /* Проставляет актуальные треки в отправители. Отправители существуют
+       всегда (см. ensurePeer), поэтому смена камера ↔ экран ↔ ничего
+       не требует нового offer/answer. */
     async function syncSenders() {
         if (!pc) return;
         const audio = localStream ? (localStream.getAudioTracks()[0] || null) : null;
@@ -59,7 +65,10 @@
         for (const t of pc.getTransceivers()) {
             const kind = t.receiver.track && t.receiver.track.kind;
             try {
-
+                /* У отвечающего трансиверы рождаются из чужого offer с направлением
+                   recvonly — «только принимаю». replaceTrack прикрепляет трек, но
+                   направление не меняет: answer уходит со словами «я только смотрю»,
+                   и собеседник не получает ни звука, ни видео. Поднимаем явно. */
                 if (t.direction === 'recvonly') t.direction = 'sendrecv';
                 if (kind === 'audio') await t.sender.replaceTrack(audio);
                 else if (kind === 'video') await t.sender.replaceTrack(video);
@@ -73,12 +82,13 @@
         let stream;
         try {
             stream = await navigator.mediaDevices.getDisplayMedia({
-
+                // Экран с кодом: разрешение важно, плавность нет. 10 fps достаточно,
+                // зато весь битрейт уходит на чёткость текста.
                 video: { frameRate: { ideal: 10, max: 15 } },
                 audio: false,
             });
         } catch (e) {
-
+            // NotAllowedError здесь — это просто «пользователь закрыл диалог», не ошибка.
             if (e.name !== 'NotAllowedError') trace('не удалось начать показ: ' + e.name, 'warn');
             return;
         }
@@ -87,8 +97,12 @@
         const track = stream.getVideoTracks()[0];
         el.localScreen.srcObject = stream;
 
+        // Пользователь может остановить показ системной кнопкой браузера,
+        // минуя наш интерфейс — тогда трек завершится сам.
         track.addEventListener('ended', () => stopScreen());
 
+        // Если соединения ещё нет — ничего страшного: трек подставится сам,
+        // когда второй участник войдёт и соединение соберётся.
         await syncSenders();
 
         setMenuItem(el.miScreen, true);
@@ -109,7 +123,7 @@
         screenStream = null;
         el.localScreen.srcObject = null;
 
-        await syncSenders();
+        await syncSenders();   // вернули камеру на место
 
         setMenuItem(el.miScreen, false);
         el.miScreenNote.textContent = 'весь экран, окно или вкладка';
@@ -122,6 +136,14 @@
 
     const isSharing = () => screenStream !== null;
 
+    /* ---------- раскладка ---------- */
+
+    /* Три состояния сцены:
+         solo      — собеседник во весь экран, своя камера плиткой в углу;
+         мой экран — экран справа, камера собеседника и своя колонкой слева;
+         его экран — его экран справа, своя камера слева.
+       Плитки не переезжают по DOM — им меняются классы grid-областей,
+       иначе <video> дёргалось бы при каждом перемещении узла. */
     function applyLayout() {
         const mine = isSharing();
         const theirs = remoteScreen && !mine;
@@ -147,6 +169,8 @@
         el.sharingTag.hidden = !theirs;
     }
 
+    /* ---------- меню ---------- */
+
     function setMenuItem(item, on) {
         item.dataset.on = String(on);
     }
@@ -158,6 +182,7 @@
 
     const menuOpen = () => !el.menuPop.hidden;
 
+    /* Панели взаимоисключающие: открытие одной закрывает другую. */
     function openPanel(which) {
         const chat = which === 'chat';
         const trace_ = which === 'trace';
@@ -177,6 +202,7 @@
     const panelOpen = () =>
         el.chatPanel.dataset.open === 'true' || el.tracePanel.dataset.open === 'true';
 
+    // Точка на кнопке меню: есть непрочитанное или что-то активно.
     function refreshMenuDot() {
         el.menuDot.hidden = el.miChatBadge.hidden && !isSharing();
     }
@@ -204,6 +230,7 @@
     el.chatClose.addEventListener('click', () => openPanel(null));
     el.traceClose.addEventListener('click', () => openPanel(null));
 
+    // Клик мимо меню закрывает его.
     document.addEventListener('click', (e) => {
         if (menuOpen() && !el.menuPop.contains(e.target)) openMenu(false);
     });
@@ -214,9 +241,13 @@
         else if (panelOpen()) openPanel(null);
     });
 
+    // На мобильных getDisplayMedia обычно нет — прячем пункт, а не показываем
+    // неработающий.
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
         el.miScreen.hidden = true;
     }
+
+    /* ---------- чат ---------- */
 
     let chat = null;
     let chatEmpty = true;
@@ -255,6 +286,9 @@
 
     const URL_RE = /(https?:\/\/[^\s<>"]+)/g;
 
+    /* Текст собеседника вставляется ТОЛЬКО как текстовые узлы, ссылки
+       собираются через createElement. Через innerHTML сюда приехал бы
+       любой HTML, который он захочет — это XSS в чистом виде. */
     function renderText(container, text) {
         let last = 0;
         text.replace(URL_RE, (url, _g, offset) => {
@@ -294,9 +328,13 @@
         el.chatInput.style.height = 'auto';
         el.chatInput.style.height = Math.min(el.chatInput.scrollHeight, 140) + 'px';
     }
-    let meta = null;
+    let meta = null;                       // data channel для состояния камеры/микрофона
     let vizCtx = null, vizAnalyser = null, vizRaf = 0, vizLevel = 0;
 
+    /* Состояние медиа передаём отдельным data channel, а не через сигналинг:
+       это данные между браузерами, серверу про них знать незачем. Событие
+       track.mute для этого не годится — Chrome при enabled=false продолжает
+       слать чёрные кадры, и трек остаётся размьюченным. */
     function sendMediaState() {
         if (!meta || meta.readyState !== 'open') return;
         const cam = el.camBtn.getAttribute('aria-pressed') === 'true';
@@ -317,14 +355,15 @@
                 remoteScreen = s.screen === true;
                 trace(`собеседник: камера ${remoteCam ? 'вкл' : 'выкл'}, микрофон ${remoteMic ? 'вкл' : 'выкл'}` +
                     (remoteScreen ? ', показывает экран' : ''));
-                stopBlackProbe();
+                stopBlackProbe(); // канал работает — резерв больше не нужен
                 paintRemoteState();
             } catch {}
         });
     }
 
     function paintRemoteState() {
-
+        // Во время показа экрана заглушка «камера выключена» не нужна —
+        // картинка есть, просто это не лицо.
         const show = !!pc && !remoteCam && !remoteScreen;
 
         el.camOff.hidden = !show;
@@ -337,6 +376,10 @@
         else stopViz();
     }
 
+    /* Резерв на случай, если канал состояния не открылся: раз в секунду
+       семплим крошечный кадр из чужого видео и смотрим яркость. Чёрный кадр
+       несколько раз подряд = камера выключена. Дёшево (192 пикселя) и работает
+       всегда, независимо от data channel. */
     let probeTimer = 0, darkStreak = 0, probeCvs = null;
 
     function startBlackProbe() {
@@ -375,6 +418,8 @@
         darkStreak = 0;
     }
 
+    /* ---------- волны по голосу собеседника ---------- */
+
     function startViz() {
         if (vizRaf) return;
 
@@ -389,7 +434,7 @@
                 vizAnalyser = vizCtx.createAnalyser();
                 vizAnalyser.fftSize = 512;
                 vizAnalyser.smoothingTimeConstant = 0.8;
-                src.connect(vizAnalyser);
+                src.connect(vizAnalyser); // к destination не подключаем — звук идёт через <video>
             } catch (e) {
                 trace('визуализация звука недоступна: ' + e.message, 'warn');
             }
@@ -415,6 +460,7 @@
             const w = cvs.clientWidth, h = cvs.clientHeight;
             const t = (now - start) / 1000;
 
+            // Громкость: берём нижнюю треть спектра — там речь.
             let target = 0;
             if (buf && vizAnalyser && remoteMic) {
                 vizAnalyser.getByteFrequencyData(buf);
@@ -423,10 +469,10 @@
                 for (let i = 0; i < n; i++) sum += buf[i];
                 target = Math.min(1, (sum / n / 255) * 3.2);
             }
-
+            // Инерция, чтобы волна дышала, а не дёргалась покадрово.
             vizLevel += (target - vizLevel) * 0.12;
 
-            const idle = 0.10;
+            const idle = 0.10;                      // волна живёт даже в тишине
             const amp = (idle + vizLevel * 0.9) * h * 0.3;
 
             ctx.clearRect(0, 0, w, h);
@@ -434,14 +480,14 @@
             ctx.lineWidth = 1.15;
 
             for (let k = 0; k < LINES; k++) {
-                const p = k / (LINES - 1);
-                const hue = 188 + p * 78;
+                const p = k / (LINES - 1);            // 0..1 по пучку линий
+                const hue = 188 + p * 78;             // бирюза → фиолет
                 const alpha = 0.5 - Math.abs(p - 0.5) * 0.45;
 
                 ctx.beginPath();
                 for (let x = 0; x <= w; x += 3) {
                     const u = x / w;
-                    const env = Math.pow(Math.sin(Math.PI * u), 1.6);
+                    const env = Math.pow(Math.sin(Math.PI * u), 1.6);  // затухание к краям
                     const y = h / 2
                         + Math.sin(u * 7.5 + t * 1.5 + k * 0.5) * amp * env
                         + Math.sin(u * 3.1 - t * 0.9 + k * 1.1) * amp * env * 0.45
@@ -470,6 +516,8 @@
         if (cvs && cvs._fit) { window.removeEventListener('resize', cvs._fit); cvs._fit = null; }
     }
 
+    /* ---------- вывод ---------- */
+
     function trace(text, kind) {
         const p = document.createElement('p');
         if (kind) p.dataset.kind = kind;
@@ -495,6 +543,8 @@
         el.stateDot.dataset.route = state;
         el.route.textContent = label;
     }
+
+    /* ---------- подготовка ---------- */
 
     function readPrefs() {
         try {
@@ -537,6 +587,8 @@
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl:  true,
+            channelCount: { ideal: 1 },
+            sampleRate:   { ideal: 48000 },
             ...(prefs.micId ? { deviceId: { ideal: prefs.micId } } : {}),
         } : false;
 
@@ -546,6 +598,17 @@
         try {
             localStream = await navigator.mediaDevices.getUserMedia(constraints);
             el.local.srcObject = localStream;
+
+            const at = localStream.getAudioTracks()[0];
+            if (at && at.getSettings) {
+                const s = at.getSettings();
+                const on = [];
+                if (s.echoCancellation) on.push('эхо');
+                if (s.noiseSuppression) on.push('шум');
+                if (s.autoGainControl) on.push('громкость');
+                trace(`микрофон: обработка ${on.length ? on.join('+') : 'выключена'}`
+                    + (s.channelCount === 1 ? ', моно' : ''), on.length ? 'ok' : 'warn');
+            }
             const vt = localStream.getVideoTracks()[0];
             if (vt) {
                 const s = vt.getSettings();
@@ -556,6 +619,9 @@
         } catch (err) {
             trace('нет доступа к камере: ' + err.name, 'err');
 
+            // Камера не далась (частый случай на Mac: браузеру не разрешили её
+            // в системных настройках) — прежде чем входить пустым, пробуем
+            // получить хотя бы микрофон, чтобы звук всё-таки был.
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 el.local.srcObject = localStream;
@@ -564,7 +630,7 @@
             } catch (err2) {
                 trace('нет доступа и к микрофону: ' + err2.name, 'err');
                 banner('Браузер не дал доступ ни к камере, ни к микрофону. Разреши доступ и обнови страницу.', 0);
-                localStream = new MediaStream();
+                localStream = new MediaStream();   // всё равно входим — сможем видеть и слышать второго
             }
         }
 
@@ -578,6 +644,8 @@
         btn.setAttribute('aria-pressed', String(on && tracks.length > 0));
         if (kind === 'video') el.tileSelf.dataset.cam = (on && tracks.length) ? 'on' : 'off';
     }
+
+    /* ---------- сигналинг ---------- */
 
     function send(type, payload) {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -612,7 +680,7 @@
     }
 
     function scheduleReconnect() {
-
+        // Экспоненциальная задержка с джиттером: 0.5с, 1с, 2с … максимум 15с.
         const delay = Math.min(15000, 500 * 2 ** retry) * (0.75 + Math.random() * 0.5);
         retry++;
         setRoute('down', 'связь потеряна');
@@ -631,7 +699,9 @@
                 if (initiator) {
                     peerPresent = true;
                     showWaiting(false);
-
+                    // ensurePeer заводит трансиверы, они порождают negotiationneeded,
+                    // и offer уходит оттуда. Явный вызов — страховка на случай, если
+                    // событие уже отработало вхолостую.
                     await ensurePeer();
                     await makeOffer();
                 }
@@ -648,7 +718,8 @@
                 trace('получен offer');
                 await ensurePeer();
                 await pc.setRemoteDescription(payloadOf(msg));
-
+                // Трансиверы созданы описанием от инициатора — теперь есть куда
+                // подставлять свои треки.
                 await syncSenders();
                 await flushIce();
                 await pc.setLocalDescription();
@@ -671,7 +742,7 @@
                     try { await pc.addIceCandidate(cand); }
                     catch (e) { trace('кандидат отклонён: ' + e.message, 'warn'); }
                 } else {
-                    pendingIce.push(cand);
+                    pendingIce.push(cand);   // рано — придержим до setRemoteDescription
                 }
                 break;
             }
@@ -716,12 +787,16 @@
         }
     }
 
+    /* ---------- WebRTC ---------- */
+
     async function ensurePeer() {
         if (pc) return pc;
 
         pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 2 });
         trace('создано соединение');
 
+        // Два канала: meta возит состояние камеры и микрофона, chat — сообщения.
+        // Инициатор создаёт оба до createOffer, второй принимает по label.
         if (initiator) {
             wireMeta(pc.createDataChannel('meta'));
             wireChat(pc.createDataChannel('chat'));
@@ -731,12 +806,21 @@
             if (e.channel.label === 'chat') wireChat(e.channel);
         });
 
+        /* Трансиверы заводим явно, а не через addTrack. Разница принципиальная:
+           addTrack создаёт отправителя только когда трек есть, а нам нужен
+           отправитель ВСЕГДА — тогда включить камеру или начать показ экрана
+           можно в любой момент простой подменой трека, без нового offer/answer.
+           Инициатор создаёт их сам; отвечающему они появятся из offer. */
         if (initiator) {
             pc.addTransceiver('audio', { direction: 'sendrecv' });
             pc.addTransceiver('video', { direction: 'sendrecv' });
             await syncSenders();
         }
 
+        /* После перехода на addTransceiver треки не привязаны к MediaStream
+           на стороне отправителя, и e.streams приходит ПУСТЫМ — полагаться на
+           e.streams[0] нельзя (в srcObject уезжал undefined: чёрный экран и
+           тишина при формально рабочем соединении). Собираем поток сами. */
         const remoteStream = new MediaStream();
 
         pc.addEventListener('track', (e) => {
@@ -766,7 +850,7 @@
             trace('ICE: ' + pc.iceConnectionState,
                 pc.iceConnectionState === 'failed' ? 'err' : null);
             if (pc.iceConnectionState === 'failed') {
-
+                // restartIce сам поднимет negotiationneeded — новый offer уйдёт оттуда.
                 trace('перезапускаем ICE', 'warn');
                 pc.restartIce();
             }
@@ -788,27 +872,37 @@
         return pc;
     }
 
+    /* Дефолтный потолок битрейта у WebRTC консервативный. Поднимаем его —
+       это именно потолок, а не обязательство: при плохой сети браузер всё
+       равно снизит качество сам. Плюс просим сохранять чёткость в ущерб
+       плавности: на занятии важнее читать код на экране, чем гладкое движение. */
     async function tuneBitrate() {
         if (!pc) return;
         for (const sender of pc.getSenders()) {
             if (!sender.track) continue;
             try {
                 const params = sender.getParameters();
-
+                // Пустой encodings означает «согласование ещё не дошло до этого
+                // отправителя». Массив принадлежит браузеру, пересоздавать его
+                // нельзя (Read-only field) — просто заходим позже, после connected.
                 if (!params.encodings || !params.encodings.length) continue;
 
                 if (sender.track.kind === 'video') {
                     if (isSharing()) {
-
+                        // Экран: текст должен читаться, движения почти нет.
                         params.encodings[0].maxBitrate = 3_000_000;
                         params.encodings[0].maxFramerate = 12;
                     } else {
-                        params.encodings[0].maxBitrate = 2_500_000;
+                        params.encodings[0].maxBitrate = 2_000_000;
                         delete params.encodings[0].maxFramerate;
                     }
                     params.degradationPreference = 'maintain-resolution';
+                    params.encodings[0].priority = 'low';
+                    params.encodings[0].networkPriority = 'low';
                 } else {
-                    params.encodings[0].maxBitrate = 64_000;
+                    params.encodings[0].maxBitrate = 48_000;
+                    params.encodings[0].priority = 'high';
+                    params.encodings[0].networkPriority = 'high';
                 }
 
                 await sender.setParameters(params);
@@ -818,6 +912,14 @@
         }
     }
 
+    /* makeOffer может быть вызван из двух мест сразу: явно при входе в комнату
+       и событием negotiationneeded от addTransceiver. Два параллельных
+       createOffer расходятся по порядку m-line, и setLocalDescription падает
+       с «order of m-lines doesn't match». Отсюда флаг и проверка состояния.
+
+       setLocalDescription() без аргумента — современная форма: браузер сам
+       собирает offer или answer по текущему состоянию, без разрыва между
+       созданием описания и его применением. */
     let makingOffer = false;
 
     async function makeOffer() {
@@ -859,6 +961,34 @@
         el.remote.srcObject = null;
     }
 
+    /* ---------- какой маршрут выбрало ICE ---------- */
+
+    let audioSeen = null, audioWarned = false;
+
+    function checkAudioHealth(r) {
+        if (audioSeen && r.timestamp > audioSeen.timestamp && !audioWarned) {
+            const secs = (r.timestamp - audioSeen.timestamp) / 1000;
+            const kbps = ((r.bytesReceived - audioSeen.bytesReceived) * 8) / secs / 1000;
+            const lost = (r.packetsLost || 0) - (audioSeen.packetsLost || 0);
+            const got  = (r.packetsReceived || 0) - (audioSeen.packetsReceived || 0);
+            const lossPct = got > 0 ? (lost / (lost + got)) * 100 : 0;
+
+            if (secs > 3) {
+                if (kbps > 0 && kbps < 14) {
+                    trace(`звук идёт на ${kbps.toFixed(0)} кбит/с — канал режет качество`, 'warn');
+                    audioWarned = true;
+                } else if (lossPct > 4) {
+                    trace(`потери звука ${lossPct.toFixed(1)}% — отсюда искажения`, 'warn');
+                    audioWarned = true;
+                } else if (r.jitter > 0.05) {
+                    trace(`неровная доставка звука (${(r.jitter * 1000).toFixed(0)} мс)`, 'warn');
+                    audioWarned = true;
+                }
+            }
+        }
+        audioSeen = r;
+    }
+
     function startStats() {
         stopStats();
         statsTimer = setInterval(async () => {
@@ -875,8 +1005,10 @@
                 const relayed = (local && local.candidateType === 'relay') ||
                     (remote && remote.candidateType === 'relay');
 
+                // Реальное входящее качество — полезно, когда картинка выглядит мыльной.
                 let quality = '';
                 stats.forEach((r) => {
+                    if (r.type === 'inbound-rtp' && r.kind === 'audio') checkAudioHealth(r);
                     if (r.type === 'inbound-rtp' && r.kind === 'video' && r.frameWidth) {
                         quality = ` · ${r.frameWidth}×${r.frameHeight}`;
                     }
@@ -890,6 +1022,8 @@
     }
 
     function stopStats() { clearInterval(statsTimer); statsTimer = 0; }
+
+    /* ---------- таймер занятия ---------- */
 
     function startClock() {
         if (clockTimer) return;
@@ -906,6 +1040,8 @@
 
     function showWaiting(on) { el.waiting.hidden = !on; }
 
+    /* ---------- управление ---------- */
+
     el.micBtn.addEventListener('click', () => {
         const on = el.micBtn.getAttribute('aria-pressed') !== 'true';
         applyTrackState('audio', on, el.micBtn);
@@ -917,7 +1053,8 @@
         const on = el.camBtn.getAttribute('aria-pressed') !== 'true';
         applyTrackState('video', on, el.camBtn);
         trace('камера ' + (on ? 'включена' : 'выключена'));
-
+        // Во время показа экрана камера в эфир не идёт, но состояние запомнится
+        // и применится, когда показ закончится.
         if (!isSharing()) sendMediaState();
     });
 
@@ -952,6 +1089,7 @@
         sendChat();
     });
 
+    // Enter отправляет, Shift+Enter переносит строку — как везде.
     el.chatInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -960,6 +1098,8 @@
     });
 
     el.chatInput.addEventListener('input', autoGrow);
+
+    /* ---------- старт ---------- */
 
     (async () => {
         trace('комната: ' + roomId);

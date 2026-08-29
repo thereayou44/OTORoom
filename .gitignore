@@ -11,3 +11,7 @@
 
 # ОС
 .DS_Store
+# зависимости и сборка фронта
+node_modules/
+collab/dist/
+collab/test/provider.mjs
