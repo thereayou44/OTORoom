@@ -54,12 +54,19 @@
         return localStream ? (localStream.getVideoTracks()[0] || null) : null;
     }
 
+    /* Что уходит в эфир по звуку: очищенный RNNoise трек, если шумодав
+       завёлся, иначе сырой микрофонный. */
+    function currentAudioTrack() {
+        if (denoisedTrack && denoisedTrack.readyState === 'live') return denoisedTrack;
+        return localStream ? (localStream.getAudioTracks()[0] || null) : null;
+    }
+
     /* Проставляет актуальные треки в отправители. Отправители существуют
        всегда (см. ensurePeer), поэтому смена камера ↔ экран ↔ ничего
        не требует нового offer/answer. */
     async function syncSenders() {
         if (!pc) return;
-        const audio = localStream ? (localStream.getAudioTracks()[0] || null) : null;
+        const audio = currentAudioTrack();
         const video = currentVideoTrack();
 
         for (const t of pc.getTransceivers()) {
@@ -575,6 +582,93 @@
         }
     }
 
+    /* ---------- шумодав ---------- */
+
+    /* Браузерный noiseSuppression умеет глушить фон только в паузах: во время
+       речи «ворота» открыты, и шум проходит вместе с голосом — то самое
+       шипение, которое медленно затихает после фразы. RNNoise (нейросетевой
+       шумодав в AudioWorklet, тот же, что у Jitsi) чистит фон и во время речи.
+       Шумодав в цепочке должен быть ровно один, поэтому при работающем
+       RNNoise браузерный выключается ещё на getUserMedia. */
+    let denoiseCtx = null, denoiseNode = null, denoisedTrack = null;
+
+    function audioConstraints(browserNS) {
+        return {
+            echoCancellation: true,
+            noiseSuppression: browserNS,
+            autoGainControl:  true,
+            channelCount: { ideal: 1 },
+            sampleRate:   { ideal: 48000 },
+            ...(prefs.micId ? { deviceId: { ideal: prefs.micId } } : {}),
+        };
+    }
+
+    function stopDenoiser() {
+        denoisedTrack = null;
+        denoiseNode = null;
+        if (denoiseCtx) { denoiseCtx.close().catch(() => {}); denoiseCtx = null; }
+    }
+
+    /* Загружает worklet и ждёт от него подтверждения, что wasm внутри реально
+       завёлся. Зовётся ДО getUserMedia: от результата зависит, просить ли
+       браузерный шумодав. */
+    async function initDenoiser() {
+        if (!(window.AudioWorkletNode && window.AudioContext)) {
+            trace('AudioWorklet недоступен — браузерный шумодав', 'warn');
+            return false;
+        }
+        try {
+            denoiseCtx = new AudioContext({ sampleRate: 48000 });
+            await denoiseCtx.audioWorklet.addModule('denoise-worklet.js');
+            denoiseNode = new AudioWorkletNode(denoiseCtx, 'oto-denoise', {
+                numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+            });
+            const msg = await new Promise((resolve) => {
+                const timer = setTimeout(() => resolve(null), 3000);
+                denoiseNode.port.onmessage = (e) => { clearTimeout(timer); resolve(e.data); };
+            });
+            if (!msg || msg.type !== 'ready') {
+                throw new Error(msg ? msg.message : 'worklet не ответил');
+            }
+            return true;
+        } catch (e) {
+            trace('RNNoise не завёлся (' + e.message + ') — браузерный шумодав', 'warn');
+            stopDenoiser();
+            return false;
+        }
+    }
+
+    /* Пропускает микрофон через RNNoise. Если что-то не так — тихо
+       откатываемся на браузерный шумодав через applyConstraints, чтобы
+       в эфир ни при каком раскладе не ушёл сырой шумный звук. */
+    async function pipeDenoiser(micTrack) {
+        if (!denoiseNode || !micTrack) { stopDenoiser(); return; }
+
+        // Запасной getUserMedia({audio:true}) включает браузерный шумодав по
+        // умолчанию — тогда RNNoise стал бы вторым в цепочке. Отключаемся.
+        const s = micTrack.getSettings ? micTrack.getSettings() : {};
+        if (s.noiseSuppression) { stopDenoiser(); return; }
+
+        try {
+            // Контекст создан до жеста пользователя и может быть suspended;
+            // после выдачи микрофона Chrome разрешает его запустить.
+            if (denoiseCtx.state !== 'running') await denoiseCtx.resume();
+            if (denoiseCtx.state !== 'running') throw new Error('AudioContext не запустился');
+
+            const src = denoiseCtx.createMediaStreamSource(new MediaStream([micTrack]));
+            const dst = denoiseCtx.createMediaStreamDestination();
+            src.connect(denoiseNode).connect(dst);
+            denoisedTrack = dst.stream.getAudioTracks()[0] || null;
+            if (!denoisedTrack) throw new Error('нет выходного трека');
+            trace('шумодав: RNNoise', 'ok');
+        } catch (e) {
+            stopDenoiser();
+            trace('RNNoise не подключился (' + e.message + ') — браузерный шумодав', 'warn');
+            try { await micTrack.applyConstraints(audioConstraints(true)); }
+            catch { trace('вернуть браузерный шумодав не удалось', 'warn'); }
+        }
+    }
+
     async function openMedia() {
         const video = prefs.camOn ? {
             width:     { ideal: 1280 },
@@ -583,14 +677,8 @@
             ...(prefs.camId ? { deviceId: { ideal: prefs.camId } } : {}),
         } : false;
 
-        const audio = prefs.micOn ? {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl:  true,
-            channelCount: { ideal: 1 },
-            sampleRate:   { ideal: 48000 },
-            ...(prefs.micId ? { deviceId: { ideal: prefs.micId } } : {}),
-        } : false;
+        const useRNNoise = prefs.micOn ? await initDenoiser() : false;
+        const audio = prefs.micOn ? audioConstraints(!useRNNoise) : false;
 
         const constraints = { video, audio };
         if (!video && !audio) constraints.audio = true;
@@ -609,6 +697,8 @@
                 trace(`микрофон: обработка ${on.length ? on.join('+') : 'выключена'}`
                     + (s.channelCount === 1 ? ', моно' : ''), on.length ? 'ok' : 'warn');
             }
+            if (useRNNoise) await pipeDenoiser(at || null);
+            else stopDenoiser();
             const vt = localStream.getVideoTracks()[0];
             if (vt) {
                 const s = vt.getSettings();
@@ -626,11 +716,14 @@
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 el.local.srcObject = localStream;
                 trace('микрофон получен, камеры нет', 'warn');
+                // Здесь шумодав браузерный (audio:true) — RNNoise сам отключится
+                if (useRNNoise) await pipeDenoiser(localStream.getAudioTracks()[0] || null);
                 banner('Камера недоступна — звонок пойдёт только со звуком. На Mac проверь: Настройки → Конфиденциальность → Камера.', 0);
             } catch (err2) {
                 trace('нет доступа и к микрофону: ' + err2.name, 'err');
                 banner('Браузер не дал доступ ни к камере, ни к микрофону. Разреши доступ и обнови страницу.', 0);
                 localStream = new MediaStream();   // всё равно входим — сможем видеть и слышать второго
+                stopDenoiser();
             }
         }
 
@@ -900,7 +993,9 @@
                     params.encodings[0].priority = 'low';
                     params.encodings[0].networkPriority = 'low';
                 } else {
-                    params.encodings[0].maxBitrate = 48_000;
+                    // 96 кбит/с — верх осмысленного для моно-речи Opus;
+                    // 48 давало слышимую экономию на качестве.
+                    params.encodings[0].maxBitrate = 96_000;
                     params.encodings[0].priority = 'high';
                     params.encodings[0].networkPriority = 'high';
                 }
@@ -1064,6 +1159,7 @@
         leaving = true;
         send('bye');
         teardownPeer();
+        stopDenoiser();
         if (screenStream) screenStream.getTracks().forEach((t) => t.stop());
         if (localStream) localStream.getTracks().forEach((t) => t.stop());
         if (ws) ws.close();
