@@ -21,6 +21,13 @@
         chatForm: $('chatForm'), chatInput: $('chatInput'),
         tracePanel: $('tracePanel'), traceClose: $('traceClose'), traceLog: $('traceLog'),
         banner: $('banner'),
+        tileEditor: $('tileEditor'), tileBoard: $('tileBoard'),
+        editorHost: $('editorHost'), boardHost: $('boardHost'),
+        editorLang: $('editorLang'), editorClose: $('editorClose'),
+        boardClose: $('boardClose'), boardTools: $('boardTools'),
+        boardColors: $('boardColors'), boardWidth: $('boardWidth'),
+        boardUndo: $('boardUndo'), boardRedo: $('boardRedo'), boardClear: $('boardClear'),
+        miBoard: $('miBoard'), miEditor: $('miEditor'),
     };
 
     const roomId = (new URLSearchParams(location.search).get('room') || '').toLowerCase();
@@ -45,6 +52,11 @@
 
     let remoteCam = true, remoteMic = true, remoteScreen = false;
     let screenStream = null;
+
+    // Совместная работа: collab живёт, пока жив data channel; редактор и
+    // доска монтируются лениво при первом открытии панели.
+    let collab = null, editor = null, board = null;
+    let pane = null;
 
     /* ---------- демонстрация экрана ---------- */
 
@@ -154,21 +166,30 @@
     function applyLayout() {
         const mine = isSharing();
         const theirs = remoteScreen && !mine;
+        const content = pane === 'editor' ? el.tileEditor : pane === 'board' ? el.tileBoard : null;
 
-        if (mine) {
+        el.tileScreen.hidden = !mine;
+        el.tileEditor.hidden = pane !== 'editor';
+        el.tileBoard.hidden = pane !== 'board';
+
+        if (content) {
+            // Редактор и доска важнее показа экрана: если открыты, занимают главное место.
             el.stage.dataset.layout = 'split';
-            el.tileScreen.hidden = false;
+            content.className = 'tile tile--main';
+            el.tileRemote.className = 'tile tile--railA';
+            el.tileSelf.className = 'tile tile--self tile--railB';
+            if (mine) el.tileScreen.hidden = true;
+        } else if (mine) {
+            el.stage.dataset.layout = 'split';
             el.tileScreen.className = 'tile tile--main';
             el.tileRemote.className = 'tile tile--railA';
             el.tileSelf.className = 'tile tile--self tile--railB';
         } else if (theirs) {
             el.stage.dataset.layout = 'split';
-            el.tileScreen.hidden = true;
             el.tileRemote.className = 'tile tile--main';
             el.tileSelf.className = 'tile tile--self tile--railA';
         } else {
             el.stage.dataset.layout = 'solo';
-            el.tileScreen.hidden = true;
             el.tileRemote.className = 'tile tile--main';
             el.tileSelf.className = 'tile tile--self';
         }
@@ -234,6 +255,41 @@
         openPanel(el.tracePanel.dataset.open === 'true' ? null : 'trace');
     });
 
+    el.miEditor.addEventListener('click', () => { openMenu(false); openPane('editor'); });
+    el.miBoard.addEventListener('click', () => { openMenu(false); openPane('board'); });
+    el.editorClose.addEventListener('click', () => openPane(null));
+    el.boardClose.addEventListener('click', () => openPane(null));
+
+    el.editorLang.addEventListener('change', () => {
+        if (editor) editor.setLanguage(el.editorLang.value);
+    });
+
+    el.boardTools.addEventListener('click', (e) => {
+        const btn = e.target.closest('.tool[data-tool]');
+        if (!btn || !board) return;
+        el.boardTools.querySelectorAll('.tool[data-tool]')
+            .forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+        board.setTool(btn.dataset.tool);
+    });
+
+    el.boardColors.addEventListener('click', (e) => {
+        const btn = e.target.closest('.swatch');
+        if (!btn || !board) return;
+        el.boardColors.querySelectorAll('.swatch')
+            .forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+        board.setColor(btn.dataset.color);
+    });
+
+    el.boardWidth.addEventListener('input', () => {
+        if (board) board.setWidth(Number(el.boardWidth.value));
+    });
+
+    el.boardUndo.addEventListener('click', () => board && board.undo());
+    el.boardRedo.addEventListener('click', () => board && board.redo());
+    el.boardClear.addEventListener('click', () => {
+        if (board && confirm('Очистить доску у обоих участников?')) board.clear();
+    });
+
     el.chatClose.addEventListener('click', () => openPanel(null));
     el.traceClose.addEventListener('click', () => openPanel(null));
 
@@ -272,6 +328,46 @@
                 refreshMenuDot();
             }
         });
+    }
+
+    /* ---------- редактор и доска ---------- */
+
+    function wireCollab(ch) {
+        if (!window.OTO) { trace('модуль совместной работы не загрузился', 'err'); return; }
+
+        collab = window.OTO.createCollab(ch, {
+            name: initiator ? 'Инициатор' : 'Участник',
+            color: initiator ? '#6fc3f7' : '#f2b24c',
+        });
+
+        ch.addEventListener('open', () => trace('канал совместной работы открыт', 'ok'));
+    }
+
+    function openPane(which) {
+        if (!collab && which) {
+            banner('Редактор и доска заработают, когда подключится второй участник.');
+            return;
+        }
+
+        if (pane === which) which = null;
+        pane = which;
+
+        el.tileEditor.hidden = which !== 'editor';
+        el.tileBoard.hidden = which !== 'board';
+        setMenuItem(el.miEditor, which === 'editor');
+        setMenuItem(el.miBoard, which === 'board');
+
+        if (which === 'editor' && !editor) {
+            editor = collab.mountEditor(el.editorHost, el.editorLang.value);
+        }
+        if (which === 'board' && !board) {
+            board = collab.mountBoard(el.boardHost);
+            board.setColor(el.boardColors.querySelector('[aria-pressed="true"]').dataset.color);
+            board.setWidth(Number(el.boardWidth.value));
+        }
+
+        applyLayout();
+        if (which === 'editor' && editor) setTimeout(() => editor.focus(), 50);
     }
 
     function sendChat() {
@@ -888,15 +984,18 @@
         pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 2 });
         trace('создано соединение');
 
-        // Два канала: meta возит состояние камеры и микрофона, chat — сообщения.
-        // Инициатор создаёт оба до createOffer, второй принимает по label.
+        // Три канала: meta возит состояние камеры и микрофона, chat — сообщения,
+        // collab — синхронизацию редактора и доски (Yjs).
+        // Инициатор создаёт все до createOffer, второй принимает по label.
         if (initiator) {
             wireMeta(pc.createDataChannel('meta'));
             wireChat(pc.createDataChannel('chat'));
+            wireCollab(pc.createDataChannel('collab', { ordered: true }));
         }
         pc.addEventListener('datachannel', (e) => {
             if (e.channel.label === 'meta') wireMeta(e.channel);
             if (e.channel.label === 'chat') wireChat(e.channel);
+            if (e.channel.label === 'collab') wireCollab(e.channel);
         });
 
         /* Трансиверы заводим явно, а не через addTrack. Разница принципиальная:
@@ -1042,6 +1141,15 @@
         remoteScreen = false;
         meta = null;
         chat = null;
+        // Совместная работа живёт на data channel этого соединения — умирает с ним.
+        if (collab) { collab.destroy(); collab = null; }
+        editor = null;
+        board = null;
+        pane = null;
+        el.tileEditor.hidden = true;
+        el.tileBoard.hidden = true;
+        setMenuItem(el.miEditor, false);
+        setMenuItem(el.miBoard, false);
         applyLayout();
         vizAnalyser = null;
         stopViz();

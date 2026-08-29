@@ -1019,3 +1019,111 @@ input, select { font: inherit; color: inherit; }
     }
     .menu__pop { transform: translateX(-50%); }
 }
+
+/* ---------- редактор и доска ---------- */
+
+.pane {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  background: var(--bp-900);
+}
+
+.pane__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(20, 34, 56, .55);
+  flex-wrap: wrap;
+}
+
+.pane__title {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--chalk-faint);
+}
+
+.pane__select {
+  padding: 5px 9px;
+  background: var(--bp-900);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--chalk-dim);
+  appearance: none;
+}
+
+.pane__close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--chalk-faint);
+  font-size: 20px;
+  line-height: 1;
+  padding: 2px 8px;
+}
+
+.pane__close:hover { color: var(--chalk); }
+
+.pane__body { overflow: hidden; position: relative; min-height: 0; }
+.pane__body .cm-editor { height: 100%; }
+
+.tools { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+
+.tool {
+  width: 30px; height: 30px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--chalk-faint);
+  transition: background .15s, color .15s, border-color .15s;
+}
+
+.tool:hover { background: rgba(255, 255, 255, .06); color: var(--chalk); }
+
+.tool[aria-pressed="true"] {
+  background: rgba(111, 195, 247, .16);
+  border-color: rgba(111, 195, 247, .4);
+  color: var(--link);
+}
+
+.tool svg { width: 16px; height: 16px; }
+.tool--danger:hover { background: rgba(255, 107, 91, .16); color: var(--pencil); }
+
+.tools__sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--line-strong);
+}
+
+.swatches { display: flex; gap: 3px; }
+
+.swatch {
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--c);
+  transition: transform .12s, border-color .15s;
+}
+
+.swatch:hover { transform: scale(1.12); }
+.swatch[aria-pressed="true"] { border-color: var(--chalk); }
+
+.tools__width {
+  width: 78px;
+  accent-color: var(--link);
+  background: transparent;
+}
+
+@media (max-width: 900px) {
+  .pane__title { display: none; }
+  .tools__width { width: 54px; }
+}
