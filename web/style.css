@@ -1153,3 +1153,35 @@ input, select { font: inherit; color: inherit; }
   max-height: 92vh;
   border-radius: 10px;
 }
+
+/* Превью картинки, ждущей отправки */
+
+.chat__attach {
+  position: relative;
+  margin: 0 10px 6px;
+  align-self: flex-start;
+}
+
+.chat__attach img {
+  display: block;
+  max-height: 72px;
+  max-width: 160px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+}
+
+.chat__attach-x {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: var(--pencil);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}

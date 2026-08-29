@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Совместный редактор и доска для OTO: Yjs поверх WebRTC data channel",
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && npm run build:denoise",
     "typecheck": "tsc --noEmit",
     "test": "node test/build-and-run.mjs",
     "build:denoise": "esbuild src/denoise-worklet.js --bundle --format=iife --minify --define:import.meta.url='\"\"' --outfile=dist/denoise-worklet.js --log-level=warning"

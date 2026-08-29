@@ -63,6 +63,9 @@
                     <span class="pane__title">Доска</span>
 
                     <div class="tools" id="boardTools">
+                        <button class="tool" data-tool="move" aria-pressed="false" title="Переместить">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/></svg>
+                        </button>
                         <button class="tool" data-tool="pen" aria-pressed="true" title="Карандаш">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5l4 4L7 21H3v-4z"/></svg>
                         </button>
@@ -251,6 +254,10 @@
     </div>
     <div class="chat__log" id="chatLog">
         <p class="chat__empty">Сообщения видит только собеседник и только пока идёт звонок. История не сохраняется.</p>
+    </div>
+    <div class="chat__attach" id="chatAttach" hidden>
+        <img id="chatAttachImg" alt="картинка к отправке">
+        <button type="button" class="chat__attach-x" id="chatAttachX" aria-label="Убрать картинку">×</button>
     </div>
     <form class="chat__form" id="chatForm">
     <textarea id="chatInput" rows="1" maxlength="2000" placeholder="Сообщение…"

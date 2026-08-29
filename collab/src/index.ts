@@ -12,7 +12,9 @@ export interface Collab {
   readonly doc: Y.Doc;
   readonly provider: DataChannelProvider;
   mountEditor(container: HTMLElement, language?: Language): EditorHandle;
-  mountBoard(container: HTMLElement): BoardHandle;
+  /** onToolChange зовётся, когда доска сама сменила инструмент (после вставки
+      картинки) — панели снаружи нужно подсветить другую кнопку. */
+  mountBoard(container: HTMLElement, onToolChange?: (tool: Tool) => void): BoardHandle;
   onSynced(cb: () => void): void;
   /** Сколько участников сейчас в документе, включая себя. */
   peers(): number;
@@ -46,12 +48,13 @@ export function createCollab(channel: RTCDataChannel, opts: CollabOptions = {}):
       return editor;
     },
 
-    mountBoard(container) {
+    mountBoard(container, onToolChange) {
       board?.destroy();
       board = createBoard({
         doc,
         awareness: provider.awareness,
         container,
+        onToolChange,
       });
       return board;
     },

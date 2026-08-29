@@ -1,7 +1,7 @@
 import * as Y from 'yjs';
 import type { Awareness } from 'y-protocols/awareness';
 
-export type Tool = 'pen' | 'line' | 'rect' | 'ellipse' | 'arrow' | 'text' | 'eraser';
+export type Tool = 'move' | 'pen' | 'line' | 'rect' | 'ellipse' | 'arrow' | 'text' | 'eraser';
 
 /**
  * Холст фиксированного размера: у собеседников разные окна, а рисунок
@@ -28,10 +28,13 @@ export interface BoardOptions {
   awareness: Awareness;
   container: HTMLElement;
   key?: string;
+  /** Доска сама переключила инструмент (например, после вставки картинки) —
+      чтобы панель инструментов снаружи подсветила правильную кнопку. */
+  onToolChange?: (tool: Tool) => void;
 }
 
 interface ShapeData {
-  type: Exclude<Tool, 'eraser'> | 'image';
+  type: Exclude<Tool, 'eraser' | 'move'> | 'image';
   color: string;
   width: number;
   points?: number[];
@@ -116,6 +119,18 @@ export function createBoard(opts: BoardOptions): BoardHandle {
 
     for (const item of shapes) {
       drawShape(item.toJSON() as unknown as ShapeData, item);
+    }
+
+    // Рамка вокруг выбранной фигуры — видно, что именно потащится.
+    if (selected && tool === 'move' && shapes.toArray().indexOf(selected) >= 0) {
+      const [bx, by, bw, bh] = bbox(selected.toJSON() as unknown as ShapeData);
+      const pad = 6;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(111,195,247,.9)';
+      ctx.lineWidth = 1.5 / scale;
+      ctx.setLineDash([7 / scale, 5 / scale]);
+      ctx.strokeRect(bx - pad, by - pad, bw + pad * 2, bh + pad * 2);
+      ctx.restore();
     }
 
     ctx.restore();
@@ -245,6 +260,131 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     return -1;
   }
 
+  // ---------- перемещение ----------
+
+  let selected: Y.Map<unknown> | null = null;
+  let moveState:
+    | { item: Y.Map<unknown>; lastX: number; lastY: number; pendX: number; pendY: number; at: number }
+    | null = null;
+
+  /** Границы фигуры в координатах холста — для рамки выделения. */
+  function bbox(s: ShapeData): [number, number, number, number] {
+    if (s.type === 'pen' && s.points && s.points.length >= 2) {
+      let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+      for (let i = 0; i < s.points.length; i += 2) {
+        l = Math.min(l, s.points[i]); r = Math.max(r, s.points[i]);
+        t = Math.min(t, s.points[i + 1]); b = Math.max(b, s.points[i + 1]);
+      }
+      return [l, t, r - l, b - t];
+    }
+    const { x1 = 0, y1 = 0, x2 = 0, y2 = 0 } = s;
+    if (s.type === 'image') return [x1, y1, s.w ?? 0, s.h ?? 0];
+    if (s.type === 'text') {
+      const lines = s.text?.split('\n') ?? [];
+      const h = Math.max(18, s.width * 9) * (lines.length || 1);
+      const w = Math.max(...lines.map((l) => l.length), 0) * Math.max(8, s.width * 4);
+      return [x1, y1, w, h];
+    }
+    return [Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1)];
+  }
+
+  /** Сдвигает фигуру на dx/dy, что бы это ни было. */
+  function translate(item: Y.Map<unknown>, dx: number, dy: number) {
+    if (item.get('type') === 'pen') {
+      const pts = (item.get('points') as number[] | undefined)?.slice();
+      if (!pts) return;
+      for (let i = 0; i < pts.length; i += 2) { pts[i] += dx; pts[i + 1] += dy; }
+      item.set('points', pts);
+      return;
+    }
+    for (const k of ['x1', 'x2'] as const) {
+      if (item.has(k)) item.set(k, (item.get(k) as number) + dx);
+    }
+    for (const k of ['y1', 'y2'] as const) {
+      if (item.has(k)) item.set(k, (item.get(k) as number) + dy);
+    }
+  }
+
+  function flushMove() {
+    if (!moveState) return;
+    const { item, pendX, pendY } = moveState;
+    if (!pendX && !pendY) return;
+    moveState.pendX = 0; moveState.pendY = 0;
+    // Фигуру мог удалить собеседник, пока мы её тащили.
+    if (shapes.toArray().indexOf(item) < 0) { moveState = null; selected = null; return; }
+    translate(item, pendX, pendY);
+  }
+
+  // ---------- ввод текста ----------
+
+  let textInput: HTMLTextAreaElement | null = null;
+
+  function closeTextInput() {
+    textInput?.remove();
+    textInput = null;
+  }
+
+  /** Текст набирается прямо на доске, а не в системном prompt: видно, где
+      он появится, и каким шрифтом. */
+  function openTextInput(x: number, y: number) {
+    closeTextInput();
+    const size = Math.max(14, width * 7);
+    const ta = document.createElement('textarea');
+    ta.rows = 1;
+    ta.className = 'board__text';
+    ta.style.cssText = [
+      'position:absolute',
+      `left:${offX + x * scale}px`,
+      `top:${offY + y * scale}px`,
+      `font:${size * scale}px "IBM Plex Sans", system-ui, sans-serif`,
+      `color:${color}`,
+      `caret-color:${color}`,
+      'background:rgba(10,18,30,.72)',
+      'border:1px solid rgba(122,167,224,.45)',
+      'border-radius:6px',
+      'padding:2px 4px',
+      'margin:0',
+      'min-width:120px',
+      'max-width:60%',
+      'outline:none',
+      'resize:none',
+      'overflow:hidden',
+      'z-index:5',
+    ].join(';');
+
+    const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
+    ta.addEventListener('input', grow);
+
+    let done = false;   // commit зовётся и по Enter, и по blur — второй раз молчим
+    const commit = () => {
+      if (done) return;
+      done = true;
+      const text = ta.value.replace(/\s+$/, '');
+      closeTextInput();
+      if (!text) return;
+      const m = new Y.Map();
+      m.set('type', 'text');
+      m.set('color', color);
+      m.set('width', width);
+      m.set('x1', x);
+      m.set('y1', y);
+      m.set('text', text);
+      shapes.push([m]);
+    };
+
+    ta.addEventListener('keydown', (ev) => {
+      ev.stopPropagation();   // Enter не должен уходить в горячие клавиши комнаты
+      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); commit(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); done = true; closeTextInput(); }
+    });
+    ta.addEventListener('blur', commit);
+
+    container.append(ta);
+    textInput = ta;
+    ta.focus();
+    grow();
+  }
+
   // ---------- ввод ----------
 
   function onPointerDown(e: PointerEvent) {
@@ -258,18 +398,18 @@ export function createBoard(opts: BoardOptions): BoardHandle {
       return;
     }
 
+    if (tool === 'move') {
+      const idx = hitTest(x, y);
+      selected = idx >= 0 ? shapes.get(idx) : null;
+      moveState = selected
+        ? { item: selected, lastX: x, lastY: y, pendX: 0, pendY: 0, at: 0 }
+        : null;
+      render();
+      return;
+    }
+
     if (tool === 'text') {
-      const text = prompt('Текст:');
-      if (text) {
-        const m = new Y.Map();
-        m.set('type', 'text');
-        m.set('color', color);
-        m.set('width', width);
-        m.set('x1', x);
-        m.set('y1', y);
-        m.set('text', text);
-        shapes.push([m]);
-      }
+      openTextInput(x, y);
       return;
     }
 
@@ -296,6 +436,18 @@ export function createBoard(opts: BoardOptions): BoardHandle {
   }
 
   function onPointerMove(e: PointerEvent) {
+    if (moveState) {
+      const [mx, my] = toBoard(e);
+      moveState.pendX += mx - moveState.lastX;
+      moveState.pendY += my - moveState.lastY;
+      moveState.lastX = mx; moveState.lastY = my;
+      const now = performance.now();
+      if (now - moveState.at < LIVE_THROTTLE) return;   // не заваливаем канал
+      moveState.at = now;
+      flushMove();
+      return;
+    }
+
     if (!drawing || !live) return;
     const [x, y] = toBoard(e);
 
@@ -314,6 +466,13 @@ export function createBoard(opts: BoardOptions): BoardHandle {
   }
 
   function onPointerUp(e: PointerEvent) {
+    if (moveState) {
+      flushMove();
+      moveState = null;
+      canvas.releasePointerCapture(e.pointerId);
+      return;
+    }
+
     if (!drawing || !live) return;
     const [x, y] = toBoard(e);
 
@@ -399,8 +558,16 @@ export function createBoard(opts: BoardOptions): BoardHandle {
 
     e.preventDefault();
     const shape = await imageToShape(file);
-    if (shape) shapes.push([shape]);
-    else console.warn('доска: картинка не влезла даже после сжатия — не вставлена');
+    if (!shape) { console.warn('доска: картинка не влезла даже после сжатия — не вставлена'); return; }
+
+    shapes.push([shape]);
+
+    // Сразу даём её двигать: вставил — тащи, а не рисуй поверх.
+    tool = 'move';
+    selected = shape;
+    canvas.style.cursor = 'move';
+    opts.onToolChange?.('move');
+    render();
   }
 
   document.addEventListener('paste', onPaste);
@@ -414,7 +581,11 @@ export function createBoard(opts: BoardOptions): BoardHandle {
   return {
     setTool(t) {
       tool = t;
-      canvas.style.cursor = t === 'eraser' ? 'cell' : t === 'text' ? 'text' : 'crosshair';
+      if (t !== 'move') selected = null;
+      closeTextInput();
+      canvas.style.cursor =
+        t === 'eraser' ? 'cell' : t === 'text' ? 'text' : t === 'move' ? 'move' : 'crosshair';
+      render();
     },
     setColor(c) { color = c; },
     setWidth(w) { width = w; },
@@ -424,6 +595,7 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     undo() { undoManager.undo(); },
     redo() { undoManager.redo(); },
     destroy() {
+      closeTextInput();
       document.removeEventListener('paste', onPaste);
       shapes.unobserveDeep(observer);
       undoManager.destroy();

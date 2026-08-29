@@ -28,6 +28,7 @@
         boardColors: $('boardColors'), boardWidth: $('boardWidth'),
         boardUndo: $('boardUndo'), boardRedo: $('boardRedo'), boardClear: $('boardClear'),
         miBoard: $('miBoard'), miEditor: $('miEditor'),
+        chatAttach: $('chatAttach'), chatAttachImg: $('chatAttachImg'), chatAttachX: $('chatAttachX'),
     };
 
     const roomId = (new URLSearchParams(location.search).get('room') || '').toLowerCase();
@@ -264,11 +265,17 @@
         if (editor) editor.setLanguage(el.editorLang.value);
     });
 
+    /* Подсветка активного инструмента. Зовётся и по клику, и самой доской —
+       она переключается на «переместить» после вставки картинки. */
+    function highlightTool(tool) {
+        el.boardTools.querySelectorAll('.tool[data-tool]')
+            .forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
+    }
+
     el.boardTools.addEventListener('click', (e) => {
         const btn = e.target.closest('.tool[data-tool]');
         if (!btn || !board) return;
-        el.boardTools.querySelectorAll('.tool[data-tool]')
-            .forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+        highlightTool(btn.dataset.tool);
         board.setTool(btn.dataset.tool);
     });
 
@@ -384,27 +391,29 @@
         return url.length > 1_200_000 ? null : url;
     }
 
-    async function sendChatImage(file) {
-        if (!chat || chat.readyState !== 'open') {
-            banner('Чат заработает, когда соединение установится.');
-            return;
-        }
-        const url = await compressChatImage(file);
-        if (!url) {
-            banner('Картинка не влезла даже после сжатия — отправь её другим способом.');
-            return;
-        }
+    /* Картинка не улетает сразу по Ctrl+V: сначала висит превью у поля ввода,
+       отправка — кнопкой (защита от случайной вставки не того). */
+    let chatAttachUrl = null;
+
+    function setChatAttach(url) {
+        chatAttachUrl = url;
+        el.chatAttachImg.src = url;
+        el.chatAttach.hidden = false;
+    }
+
+    function clearChatAttach() {
+        chatAttachUrl = null;
+        el.chatAttachImg.src = '';
+        el.chatAttach.hidden = true;
+    }
+
+    function sendImageData(url) {
         const b64 = url.slice(url.indexOf(',') + 1);
         const CHUNK = 16 * 1024;
         const total = Math.ceil(b64.length / CHUNK);
         const id = Math.random().toString(36).slice(2, 10);
-        try {
-            for (let i = 0; i < total; i++) {
-                chat.send(JSON.stringify({ img: id, seq: i, total, part: b64.substr(i * CHUNK, CHUNK) }));
-            }
-            addImageMessage(url, true);
-        } catch {
-            banner('Не удалось отправить картинку.');
+        for (let i = 0; i < total; i++) {
+            chat.send(JSON.stringify({ img: id, seq: i, total, part: b64.substr(i * CHUNK, CHUNK) }));
         }
     }
 
@@ -478,7 +487,7 @@
             editor = collab.mountEditor(el.editorHost, el.editorLang.value);
         }
         if (which === 'board' && !board) {
-            board = collab.mountBoard(el.boardHost);
+            board = collab.mountBoard(el.boardHost, highlightTool);
             board.setColor(el.boardColors.querySelector('[aria-pressed="true"]').dataset.color);
             board.setWidth(Number(el.boardWidth.value));
         }
@@ -489,16 +498,24 @@
 
     function sendChat() {
         const text = el.chatInput.value.trim();
-        if (!text) return;
+        if (!text && !chatAttachUrl) return;
         if (!chat || chat.readyState !== 'open') {
             banner('Чат заработает, когда соединение установится.');
             return;
         }
         try {
-            chat.send(JSON.stringify({ text }));
-            addMessage(text, true);
-            el.chatInput.value = '';
-            autoGrow();
+            if (chatAttachUrl) {
+                const url = chatAttachUrl;
+                sendImageData(url);
+                addImageMessage(url, true);
+                clearChatAttach();
+            }
+            if (text) {
+                chat.send(JSON.stringify({ text }));
+                addMessage(text, true);
+                el.chatInput.value = '';
+                autoGrow();
+            }
         } catch (e) {
             banner('Не удалось отправить сообщение.');
         }
@@ -1421,14 +1438,18 @@
 
     el.chatInput.addEventListener('input', autoGrow);
 
-    // Ctrl+V картинки в поле чата отправляет её собеседнику.
-    el.chatInput.addEventListener('paste', (e) => {
+    // Ctrl+V картинки в поле чата вешает её к отправке (уйдёт по кнопке).
+    el.chatInput.addEventListener('paste', async (e) => {
         const items = e.clipboardData ? Array.from(e.clipboardData.items) : [];
         const file = items.find((i) => i.type.startsWith('image/'))?.getAsFile();
         if (!file) return;
         e.preventDefault();
-        sendChatImage(file);
+        const url = await compressChatImage(file);
+        if (!url) { banner('Картинка не влезла даже после сжатия.'); return; }
+        setChatAttach(url);
     });
+
+    el.chatAttachX.addEventListener('click', clearChatAttach);
 
     /* ---------- старт ---------- */
 

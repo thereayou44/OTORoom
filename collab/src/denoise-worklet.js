@@ -13,6 +13,10 @@ import { createRNNWasmModuleSync } from '@jitsi/rnnoise-wasm';
 
 const FRAME = 480; // rnnoise принимает ровно 480 сэмплов (10 мс при 48 кГц)
 
+// Доля исходного сигнала в выходе: страховка от срезанных окончаний слов.
+// 0.12 ≈ -18 дБ остаточного фона — не слышно, но хвосты фраз живы.
+const DRY_MIX = 0.12;
+
 class DenoiseProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
@@ -70,8 +74,16 @@ class DenoiseProcessor extends AudioWorkletProcessor {
         const base = this.heapPtr >> 2;
         for (let i = 0; i < FRAME; i++) heap[base + i] = this.inBuf[i] * 32768;
         this.wasm._rnnoise_process_frame(this.state, this.heapPtr, this.heapPtr);
+
+        /* Чистый выход rnnoise режет тихие хвосты слов: детектор голоса считает
+           затухающую согласную шумом и глушит её в ноль. Поэтому подмешиваем
+           немного исходного сигнала — фон остаётся ниже слышимости (-18 дБ),
+           а окончания слов не пропадают. */
         const out = new Float32Array(FRAME);
-        for (let i = 0; i < FRAME; i++) out[i] = heap[base + i] / 32768;
+        for (let i = 0; i < FRAME; i++) {
+            const clean = heap[base + i] / 32768;
+            out[i] = clean + DRY_MIX * (this.inBuf[i] - clean);
+        }
         this.outQueue.push(out);
     }
 

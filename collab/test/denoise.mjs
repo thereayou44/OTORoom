@@ -61,6 +61,9 @@ rmsOut = Math.sqrt(rmsOut / (blocks * BLOCK));
 const dropDb = 20 * Math.log10(rmsOut / rmsIn);
 ok(Number.isFinite(dropDb) && dropDb < -10,
    `шум подавлен: ${dropDb.toFixed(1)} дБ (вход ${rmsIn.toFixed(4)}, выход ${rmsOut.toFixed(4)})`);
+// Полное подавление в ноль срезало бы окончания слов — подмешанный
+// исходный сигнал должен оставлять слышимый пол (см. DRY_MIX).
+ok(dropDb > -30, `остался пол сигнала, а не тишина: ${dropDb.toFixed(1)} дБ`);
 
 // Прозрачный режим: enabled=false пропускает звук как есть
 p.port.onmessage({ data: { enabled: false } });
