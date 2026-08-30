@@ -29,6 +29,7 @@
         boardUndo: $('boardUndo'), boardRedo: $('boardRedo'), boardClear: $('boardClear'),
         miBoard: $('miBoard'), miEditor: $('miEditor'),
         chatAttach: $('chatAttach'), chatAttachImg: $('chatAttachImg'), chatAttachX: $('chatAttachX'),
+        gainTune: $('gainTune'), gainRange: $('gainRange'), gainValue: $('gainValue'),
     };
 
     const roomId = (new URLSearchParams(location.search).get('room') || '').toLowerCase();
@@ -818,10 +819,27 @@
        добираем сами — но только на речи, см. mic-gain-worklet.js. За ступенью
        стоит штатный компрессор-ограничитель: усиление в 3.5 раза может
        загнать громкий возглас в перегруз, ограничитель это срежет. */
-    let boostCtx = null, boostedTrack = null;
+    let boostCtx = null, boostNode = null, boostedTrack = null;
+
+    const GAIN_DEFAULT = 4.2;   // должен совпадать с MAKEUP в mic-gain-worklet.js
+
+    /* Подобранное ползунком значение переживает перезагрузку: подбирать
+       громкость, теряя её при каждом F5, невозможно. */
+    function savedGain() {
+        const v = Number(localStorage.getItem('oto.micGain'));
+        return Number.isFinite(v) && v >= 1 && v <= 8 ? v : GAIN_DEFAULT;
+    }
+
+    function applyGain(v) {
+        localStorage.setItem('oto.micGain', String(v));
+        if (boostNode) boostNode.port.postMessage({ makeup: v });
+        el.gainValue.textContent = `×${v.toFixed(1)} (+${(20 * Math.log10(v)).toFixed(1)} дБ)`;
+    }
 
     function stopBoost() {
         boostedTrack = null;
+        boostNode = null;
+        el.gainTune.hidden = true;
         if (boostCtx) { boostCtx.close().catch(() => {}); boostCtx = null; }
     }
 
@@ -850,6 +868,13 @@
 
             boostedTrack = dst.stream.getAudioTracks()[0] || null;
             if (!boostedTrack) throw new Error('нет выходного трека');
+
+            boostNode = gain;
+            const v = savedGain();
+            el.gainRange.value = String(v);
+            el.gainTune.hidden = false;
+            applyGain(v);
+
             trace('громкость: усиление на речи включено', 'ok');
         } catch (e) {
             // Не вышло — идём с сырым микрофоном: тише, но рабочий звук.
@@ -1419,6 +1444,8 @@
     });
 
     el.chatAttachX.addEventListener('click', clearChatAttach);
+
+    el.gainRange.addEventListener('input', () => applyGain(Number(el.gainRange.value)));
 
     /* ---------- старт ---------- */
 
