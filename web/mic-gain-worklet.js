@@ -14,7 +14,7 @@
  * Ограничитель от перегруза ставится снаружи, обычным DynamicsCompressorNode.
  */
 
-const MAKEUP = 4.2;         // +12.5 дБ на речи
+const MAKEUP = 4.0;         // +12 дБ на речи — подобрано на слух в живом звонке
 
 /* Ворота. Открываются по громкости выше OPEN, закрываются ниже CLOSE —
    разные пороги, чтобы не дребезжали на границе. Закрытые ворота не глушат
@@ -41,7 +41,6 @@ class MicGainProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
         this.enabled = true;
-        this.makeup = MAKEUP;
 
         this.env = 0;
         this.gate = DEPTH;      // текущее положение ворот
@@ -56,9 +55,7 @@ class MicGainProcessor extends AudioWorkletProcessor {
         this.holdSamples = Math.round((HOLD_MS / 1000) * r);
 
         this.port.onmessage = (e) => {
-            const d = e.data || {};
-            if (typeof d.enabled === 'boolean') this.enabled = d.enabled;
-            if (typeof d.makeup === 'number' && d.makeup > 0) this.makeup = d.makeup;
+            if (e.data && typeof e.data.enabled === 'boolean') this.enabled = e.data.enabled;
         };
     }
 
@@ -91,7 +88,7 @@ class MicGainProcessor extends AudioWorkletProcessor {
             const gc = target > this.gate ? this.gateAtt : this.gateRel;
             this.gate = target + (this.gate - target) * gc;
 
-            output[i] = x * this.makeup * this.gate;
+            output[i] = x * MAKEUP * this.gate;
         }
 
         return true;
