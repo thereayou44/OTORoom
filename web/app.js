@@ -67,7 +67,10 @@
         return localStream ? (localStream.getVideoTracks()[0] || null) : null;
     }
 
+    /* Что уходит в эфир по звуку: усиленный трек, если ступень громкости
+       поднялась, иначе сырой микрофонный. */
     function currentAudioTrack() {
+        if (boostedTrack && boostedTrack.readyState === 'live') return boostedTrack;
         return localStream ? (localStream.getAudioTracks()[0] || null) : null;
     }
 
@@ -809,6 +812,52 @@
         }
     }
 
+    /* ---------- громкость микрофона ---------- */
+
+    /* Браузерный AGC выключен (он поднимал фон в паузах), поэтому громкость
+       добираем сами — но только на речи, см. mic-gain-worklet.js. За ступенью
+       стоит штатный компрессор-ограничитель: усиление в 3.5 раза может
+       загнать громкий возглас в перегруз, ограничитель это срежет. */
+    let boostCtx = null, boostedTrack = null;
+
+    function stopBoost() {
+        boostedTrack = null;
+        if (boostCtx) { boostCtx.close().catch(() => {}); boostCtx = null; }
+    }
+
+    async function startBoost(micTrack) {
+        if (!micTrack || !(window.AudioWorkletNode && window.AudioContext)) return;
+        try {
+            boostCtx = new AudioContext({ sampleRate: 48000 });
+            await boostCtx.audioWorklet.addModule('mic-gain-worklet.js');
+            if (boostCtx.state !== 'running') await boostCtx.resume();
+            if (boostCtx.state !== 'running') throw new Error('AudioContext не запустился');
+
+            const src = boostCtx.createMediaStreamSource(new MediaStream([micTrack]));
+            const gain = new AudioWorkletNode(boostCtx, 'oto-mic-gain', {
+                numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+            });
+
+            const limiter = boostCtx.createDynamicsCompressor();
+            limiter.threshold.value = -3;
+            limiter.knee.value = 0;
+            limiter.ratio.value = 20;
+            limiter.attack.value = 0.003;
+            limiter.release.value = 0.25;
+
+            const dst = boostCtx.createMediaStreamDestination();
+            src.connect(gain).connect(limiter).connect(dst);
+
+            boostedTrack = dst.stream.getAudioTracks()[0] || null;
+            if (!boostedTrack) throw new Error('нет выходного трека');
+            trace('громкость: усиление на речи включено', 'ok');
+        } catch (e) {
+            // Не вышло — идём с сырым микрофоном: тише, но рабочий звук.
+            stopBoost();
+            trace('усиление не подключилось (' + e.message + ') — микрофон как есть', 'warn');
+        }
+    }
+
     async function openMedia() {
         const video = prefs.camOn ? {
             width:     { ideal: 1280 },
@@ -850,6 +899,7 @@
                 trace(`микрофон: обработка ${on.length ? on.join('+') : 'выключена'}`
                     + (s.channelCount === 1 ? ', моно' : ''), on.length ? 'ok' : 'warn');
             }
+            if (at) await startBoost(at);
             const vt = localStream.getVideoTracks()[0];
             if (vt) {
                 const s = vt.getSettings();
@@ -867,6 +917,7 @@
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 el.local.srcObject = localStream;
                 trace('микрофон получен, камеры нет', 'warn');
+                await startBoost(localStream.getAudioTracks()[0] || null);
                 banner('Камера недоступна — звонок пойдёт только со звуком. На Mac проверь: Настройки → Конфиденциальность → Камера.', 0);
             } catch (err2) {
                 trace('нет доступа и к микрофону: ' + err2.name, 'err');
@@ -1320,6 +1371,7 @@
         leaving = true;
         send('bye');
         teardownPeer();
+        stopBoost();
         if (screenStream) screenStream.getTracks().forEach((t) => t.stop());
         if (localStream) localStream.getTracks().forEach((t) => t.stop());
         if (ws) ws.close();
