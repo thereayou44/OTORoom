@@ -1023,11 +1023,23 @@
                 setRoute('none', 'ждём offer');
                 break;
 
-            case 'offer':
-                trace('получен offer');
+            case 'offer': {
                 await ensurePeer();
+
+                /* Встречный offer: мы либо сами сейчас его делаем, либо ещё не
+                   вернулись в stable. Невежливый такой offer отбрасывает и ждёт
+                   ответа на свой; вежливый принимает чужой — setRemoteDescription
+                   сам откатит наш незавершённый. */
+                const ready = !makingOffer
+                    && (pc.signalingState === 'stable' || settingRemoteAnswer);
+                if (!ready && !isPolite()) {
+                    trace('встречный offer отброшен (мы ведём переговоры)', 'warn');
+                    break;
+                }
+                trace(ready ? 'получен offer' : 'получен встречный offer — уступаем');
+
                 await pc.setRemoteDescription(payloadOf(msg));
-                // Трансиверы созданы описанием от инициатора — теперь есть куда
+                // Трансиверы созданы описанием собеседника — теперь есть куда
                 // подставлять свои треки.
                 await syncSenders();
                 await flushIce();
@@ -1036,11 +1048,22 @@
                 tuneBitrate();
                 trace('отправлен answer');
                 break;
+            }
 
             case 'answer':
-                trace('получен answer');
                 if (!pc) break;
-                await pc.setRemoteDescription(payloadOf(msg));
+                // Ответ на offer, который мы уже отменили (уступили встречному).
+                if (pc.signalingState !== 'have-local-offer') {
+                    trace('answer не к месту — пропускаем', 'warn');
+                    break;
+                }
+                trace('получен answer');
+                try {
+                    settingRemoteAnswer = true;
+                    await pc.setRemoteDescription(payloadOf(msg));
+                } finally {
+                    settingRemoteAnswer = false;
+                }
                 await flushIce();
                 break;
 
@@ -1161,25 +1184,35 @@
         pc.addEventListener('iceconnectionstatechange', () => {
             trace('ICE: ' + pc.iceConnectionState,
                 pc.iceConnectionState === 'failed' ? 'err' : null);
-            if (pc.iceConnectionState === 'failed') {
-                // restartIce сам поднимет negotiationneeded — новый offer уйдёт оттуда.
-                trace('перезапускаем ICE', 'warn');
-                pc.restartIce();
-            }
+            if (pc.iceConnectionState === 'failed') tryRecover('ICE не собрался');
         });
 
         pc.addEventListener('connectionstatechange', () => {
             const s = pc.connectionState;
             trace('соединение: ' + s, s === 'connected' ? 'ok' : s === 'failed' ? 'err' : null);
-            if (s === 'connected') { startClock(); startStats(); tuneBitrate(); }
-            if (s === 'failed') setRoute('down', 'не собралось');
-            if (s === 'disconnected') setRoute('down', 'связь прерывается');
+
+            if (s === 'connected') {
+                cancelRecovery();
+                startClock(); startStats(); tuneBitrate();
+            }
+            if (s === 'failed') {
+                setRoute('down', 'не собралось');
+                tryRecover('соединение разорвано');
+            }
+            if (s === 'disconnected') {
+                setRoute('down', 'связь прерывается');
+                /* disconnected — ещё не приговор: браузер часто выплывает сам,
+                   особенно на мобильной сети. Но если за DISCONNECT_GRACE не
+                   выплыл, ждать дальше бессмысленно — раньше на этом месте
+                   звонок просто зависал молча. */
+                scheduleRecovery();
+            }
             paintRemoteState();
         });
 
-        pc.addEventListener('negotiationneeded', () => {
-            if (initiator) makeOffer();
-        });
+        // Offer шлют оба: иначе восстановление после обрыва работает только
+        // у инициатора. Столкновения разруливаются вежливостью, см. makeOffer.
+        pc.addEventListener('negotiationneeded', () => { makeOffer(); });
 
         return pc;
     }
@@ -1235,6 +1268,55 @@
        собирает offer или answer по текущему состоянию, без разрыва между
        созданием описания и его применением. */
     let makingOffer = false;
+    let settingRemoteAnswer = false;
+
+    /* ---------- восстановление соединения ---------- */
+
+    const DISCONNECT_GRACE = 6000;   // сколько ждём, пока браузер выплывет сам
+    const RECOVER_COOLDOWN = 8000;   // не чаще, чем раз в столько — иначе шторм
+    let recoverTimer = 0, lastRecover = 0;
+
+    function cancelRecovery() {
+        clearTimeout(recoverTimer);
+        recoverTimer = 0;
+    }
+
+    function scheduleRecovery() {
+        if (recoverTimer) return;
+        recoverTimer = setTimeout(() => {
+            recoverTimer = 0;
+            if (pc && pc.connectionState !== 'connected') tryRecover('связь не восстановилась сама');
+        }, DISCONNECT_GRACE);
+    }
+
+    /* Перезапуск ICE: собираем маршрут заново, не разрывая звонок. Работает
+       у обеих сторон — restartIce поднимает negotiationneeded, а offer теперь
+       шлёт каждый. */
+    function tryRecover(why) {
+        if (!pc || leaving) return;
+        const now = Date.now();
+        if (now - lastRecover < RECOVER_COOLDOWN) return;
+        lastRecover = now;
+        cancelRecovery();
+
+        trace(`${why} — перезапускаем ICE`, 'warn');
+        try {
+            pc.restartIce();
+            // Вежливая сторона своим offer'ом уступит, если инициатор успел
+            // первым, — столкновение безопасно.
+            makeOffer();
+        } catch (e) {
+            trace('перезапуск не удался: ' + e.message, 'err');
+        }
+    }
+
+    /* Кто уступает при встречных offer'ах. Раньше offer умел слать только
+       инициатор, и восстановление после обрыва у второго участника было
+       мёртвым: restartIce поднимает negotiationneeded, а тот у него ничего
+       не делал. Теперь offer шлют оба, а столкновение разруливается по
+       вежливости: вежливый откатывает свой offer и принимает чужой,
+       невежливый чужой игнорирует. Вежливый — тот, кто вошёл вторым. */
+    const isPolite = () => !initiator;
 
     async function makeOffer() {
         if (!pc || makingOffer) return;
@@ -1255,6 +1337,9 @@
     function teardownPeer() {
         stopStats();
         stopClock();
+        cancelRecovery();
+        makingOffer = false;
+        settingRemoteAnswer = false;
         pendingIce = [];
         remoteCam = true;
         remoteMic = true;
