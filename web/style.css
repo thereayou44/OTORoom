@@ -1185,3 +1185,13 @@ input, select { font: inherit; color: inherit; }
   display: grid;
   place-items: center;
 }
+
+/* Счётчик страниц доски */
+
+.tools__page {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--chalk-dim);
+  min-width: 34px;
+  text-align: center;
+}

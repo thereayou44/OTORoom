@@ -27,6 +27,8 @@
         boardClose: $('boardClose'), boardTools: $('boardTools'),
         boardColors: $('boardColors'), boardWidth: $('boardWidth'),
         boardUndo: $('boardUndo'), boardRedo: $('boardRedo'), boardClear: $('boardClear'),
+        boardPrev: $('boardPrev'), boardNext: $('boardNext'),
+        boardPage: $('boardPage'), boardAddPage: $('boardAddPage'),
         miBoard: $('miBoard'), miEditor: $('miEditor'),
         chatAttach: $('chatAttach'), chatAttachImg: $('chatAttachImg'), chatAttachX: $('chatAttachX'),
     };
@@ -291,10 +293,22 @@
         if (board) board.setWidth(Number(el.boardWidth.value));
     });
 
+    /* Счётчик страниц. Зовётся и на свои действия, и когда листает
+       собеседник — страница на доске общая. */
+    function showPages(page, total) {
+        el.boardPage.textContent = `${page + 1}/${total}`;
+        el.boardPrev.disabled = page === 0;
+        el.boardNext.disabled = page >= total - 1;
+    }
+
+    el.boardPrev.addEventListener('click', () => board && board.setPage(board.page() - 1));
+    el.boardNext.addEventListener('click', () => board && board.setPage(board.page() + 1));
+    el.boardAddPage.addEventListener('click', () => board && board.addPage());
+
     el.boardUndo.addEventListener('click', () => board && board.undo());
     el.boardRedo.addEventListener('click', () => board && board.redo());
     el.boardClear.addEventListener('click', () => {
-        if (board && confirm('Очистить доску у обоих участников?')) board.clear();
+        if (board && confirm('Очистить эту страницу у обоих участников?')) board.clear();
     });
 
     el.chatClose.addEventListener('click', () => openPanel(null));
@@ -487,7 +501,10 @@
             editor = collab.mountEditor(el.editorHost, el.editorLang.value);
         }
         if (which === 'board' && !board) {
-            board = collab.mountBoard(el.boardHost, highlightTool);
+            board = collab.mountBoard(el.boardHost, {
+                onToolChange: highlightTool,
+                onPagesChange: showPages,
+            });
             board.setColor(el.boardColors.querySelector('[aria-pressed="true"]').dataset.color);
             board.setWidth(Number(el.boardWidth.value));
         }

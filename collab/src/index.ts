@@ -8,13 +8,18 @@ export interface CollabOptions {
   color?: string;
 }
 
+export interface BoardHooks {
+  onToolChange?: (tool: Tool) => void;
+  onPagesChange?: (page: number, total: number) => void;
+}
+
 export interface Collab {
   readonly doc: Y.Doc;
   readonly provider: DataChannelProvider;
   mountEditor(container: HTMLElement, language?: Language): EditorHandle;
-  /** onToolChange зовётся, когда доска сама сменила инструмент (после вставки
-      картинки) — панели снаружи нужно подсветить другую кнопку. */
-  mountBoard(container: HTMLElement, onToolChange?: (tool: Tool) => void): BoardHandle;
+  /** Колбэки нужны панели инструментов снаружи: доска сама меняет инструмент
+      после вставки картинки, а страницу может пролистать собеседник. */
+  mountBoard(container: HTMLElement, hooks?: BoardHooks): BoardHandle;
   onSynced(cb: () => void): void;
   /** Сколько участников сейчас в документе, включая себя. */
   peers(): number;
@@ -48,13 +53,14 @@ export function createCollab(channel: RTCDataChannel, opts: CollabOptions = {}):
       return editor;
     },
 
-    mountBoard(container, onToolChange) {
+    mountBoard(container, hooks) {
       board?.destroy();
       board = createBoard({
         doc,
         awareness: provider.awareness,
         container,
-        onToolChange,
+        onToolChange: hooks?.onToolChange,
+        onPagesChange: hooks?.onPagesChange,
       });
       return board;
     },

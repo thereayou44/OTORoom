@@ -17,9 +17,16 @@ export interface BoardHandle {
   setTool(tool: Tool): void;
   setColor(color: string): void;
   setWidth(width: number): void;
+  /** Очищает текущую страницу, остальные не трогает. */
   clear(): void;
   undo(): void;
   redo(): void;
+  /** Сколько всего страниц. */
+  pages(): number;
+  /** Какая открыта сейчас, с нуля. */
+  page(): number;
+  setPage(i: number): void;
+  addPage(): void;
   destroy(): void;
 }
 
@@ -31,6 +38,9 @@ export interface BoardOptions {
   /** Доска сама переключила инструмент (например, после вставки картинки) —
       чтобы панель инструментов снаружи подсветила правильную кнопку. */
   onToolChange?: (tool: Tool) => void;
+  /** Сменилась страница или их количество — в том числе когда листает
+      собеседник. Панели снаружи нужно обновить счётчик. */
+  onPagesChange?: (page: number, total: number) => void;
 }
 
 interface ShapeData {
@@ -52,8 +62,19 @@ const IMG_MAX_SIDE = 1280;
 
 export function createBoard(opts: BoardOptions): BoardHandle {
   const { doc, awareness, container } = opts;
-  const shapes = doc.getArray<Y.Map<unknown>>(opts.key ?? 'board');
-  const undoManager = new Y.UndoManager(shapes);
+
+  /* Страницы. Каждая — свой Y.Array фигур (`board:0`, `board:1`, …), а
+     сколько их всего и какую сейчас смотрим — в общей карте. Номер страницы
+     общий на двоих: на занятии «открой вторую» должно работать буквально,
+     без просьбы пролистать самому. */
+  const prefix = opts.key ?? 'board';
+  const meta = doc.getMap<number>(prefix + '-meta');
+
+  let page = 0;
+  let shapes = doc.getArray<Y.Map<unknown>>(`${prefix}:0`);
+  let undoManager = new Y.UndoManager(shapes);
+
+  const pageCount = () => Math.max(1, Number(meta.get('pages')) || 1);
 
   const canvas = document.createElement('canvas');
   canvas.className = 'board__canvas';
@@ -576,9 +597,66 @@ export function createBoard(opts: BoardOptions): BoardHandle {
   const observer = () => render();
   shapes.observeDeep(observer);
 
+  // ---------- страницы ----------
+
+  function notifyPages() {
+    opts.onPagesChange?.(page, pageCount());
+  }
+
+  /* Пересаживаемся на другую страницу: у каждой свой массив фигур, а значит
+     и свой наблюдатель, и своя история отмены — чужую страницу отменять
+     нельзя. */
+  function bindPage(i: number) {
+    const target = Math.max(0, Math.min(pageCount() - 1, i));
+    if (target === page) { notifyPages(); return; }
+
+    shapes.unobserveDeep(observer);
+    undoManager.destroy();
+
+    page = target;
+    shapes = doc.getArray<Y.Map<unknown>>(`${prefix}:${page}`);
+    undoManager = new Y.UndoManager(shapes);
+    shapes.observeDeep(observer);
+
+    // Всё, что относилось к прошлой странице, больше не действительно
+    selected = null;
+    moveState = null;
+    drawing = false;
+    live = null;
+    closeTextInput();
+
+    render();
+    notifyPages();
+  }
+
+  /* Номер страницы и их количество едут через общую карту, поэтому
+     собеседник листает вместе с нами — и наоборот. */
+  const metaObserver = () => {
+    const want = Number(meta.get('current')) || 0;
+    if (want !== page) bindPage(want);
+    else notifyPages();
+  };
+  meta.observe(metaObserver);
+
   fit();
+  notifyPages();
 
   return {
+    pages: () => pageCount(),
+    page: () => page,
+    setPage(i) {
+      const target = Math.max(0, Math.min(pageCount() - 1, i));
+      meta.set('current', target);
+      bindPage(target);
+    },
+    addPage() {
+      const n = pageCount() + 1;
+      doc.transact(() => {
+        meta.set('pages', n);
+        meta.set('current', n - 1);
+      });
+      bindPage(n - 1);
+    },
     setTool(t) {
       tool = t;
       if (t !== 'move') selected = null;
@@ -597,6 +675,7 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     destroy() {
       closeTextInput();
       document.removeEventListener('paste', onPaste);
+      meta.unobserve(metaObserver);
       shapes.unobserveDeep(observer);
       undoManager.destroy();
       ro.disconnect();

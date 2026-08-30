@@ -174,5 +174,35 @@ const settle = (ms = 60) => new Promise(r => setTimeout(r, ms));
     pa.destroy(); pb.destroy();
 }
 
+// 9. Страницы доски: количество и текущая страница общие на двоих
+{
+    console.log('\n9. страницы доски');
+    const [ca, cb] = makePair({ latency: 15 });
+    const da = new Y.Doc(), db = new Y.Doc();
+    const pa = new DataChannelProvider(da, ca), pb = new DataChannelProvider(db, cb);
+    await settle(80);
+
+    // A рисует на первой странице и заводит вторую
+    const m1 = new Y.Map(); m1.set('type', 'pen'); m1.set('points', [1, 2, 3, 4]);
+    da.getArray('board:0').push([m1]);
+    da.getMap('board-meta').set('pages', 2);
+    da.getMap('board-meta').set('current', 1);
+    await settle(200);
+
+    ok(Number(db.getMap('board-meta').get('pages')) === 2, 'у B тоже две страницы');
+    ok(Number(db.getMap('board-meta').get('current')) === 1, 'B листнулся на вторую вместе с A');
+
+    // Рисуем на второй — первая не должна измениться
+    const m2 = new Y.Map(); m2.set('type', 'rect'); m2.set('x1', 10); m2.set('y1', 10);
+    db.getArray('board:1').push([m2]);
+    await settle(200);
+
+    ok(da.getArray('board:1').length === 1, 'фигура со второй страницы доехала');
+    ok(da.getArray('board:0').length === 1, 'первая страница осталась нетронутой');
+    ok(da.getArray('board:0').get(0).get('type') === 'pen', 'на первой всё та же фигура');
+
+    pa.destroy(); pb.destroy();
+}
+
 console.log(failed === 0 ? '\nВСЕ ТЕСТЫ ПРОШЛИ' : `\nПРОВАЛОВ: ${failed}`);
 process.exit(failed === 0 ? 0 : 1);
