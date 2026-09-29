@@ -961,6 +961,28 @@
         ws.send(JSON.stringify(payload === undefined ? { type } : { type, payload }));
     }
 
+    /* Звонок уже идёт и сервер ему не нужен. */
+    const callAlive = () => !!pc
+        && (pc.connectionState === 'connected' || pc.connectionState === 'connecting');
+
+    /* Render на бесплатном тарифе усыпляет сервис после 15 минут без входящего
+       трафика — ровно тот интервал, на котором рвался урок. Пинги шлёт сам
+       сервер, но это трафик исходящий, и заснуть он не мешает. Поэтому раз в
+       минуту подаём голос с клиента: на сервере в switch по типу сообщения нет
+       default, незнакомый тип он молча пропустит. */
+    const WS_KEEPALIVE = 60000;
+    let keepaliveTimer = 0;
+
+    function startWsKeepalive() {
+        stopWsKeepalive();
+        keepaliveTimer = setInterval(() => send('keepalive'), WS_KEEPALIVE);
+    }
+
+    function stopWsKeepalive() {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = 0;
+    }
+
     function connect() {
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
         ws = new WebSocket(`${proto}//${location.host}/ws`);
@@ -969,6 +991,7 @@
             retry = 0;
             trace('вебсокет открыт');
             send('join', { room: roomId });
+            startWsKeepalive();
         });
 
         ws.addEventListener('message', (e) => {
@@ -978,10 +1001,21 @@
         });
 
         ws.addEventListener('close', () => {
-            trace('вебсокет закрыт', leaving ? null : 'warn');
-            if (leaving) return;
-            teardownPeer();
-            showWaiting(true);
+            stopWsKeepalive();
+            if (leaving) { trace('вебсокет закрыт'); return; }
+
+            /* Сервер нужен только чтобы свести двоих: медиа и данные идут P2P
+               и его отсутствие звонку не мешает. Раньше здесь стоял
+               teardownPeer() — и когда Render засыпал, мы своими руками
+               рушили рабочий звонок. Живой звонок не трогаем, вебсокет
+               поднимаем в фоне. */
+            if (callAlive()) {
+                trace('вебсокет закрыт, звонок продолжается', 'warn');
+            } else {
+                trace('вебсокет закрыт', 'warn');
+                teardownPeer();
+                showWaiting(true);
+            }
             scheduleReconnect();
         });
 
@@ -992,8 +1026,11 @@
         // Экспоненциальная задержка с джиттером: 0.5с, 1с, 2с … максимум 15с.
         const delay = Math.min(15000, 500 * 2 ** retry) * (0.75 + Math.random() * 0.5);
         retry++;
-        setRoute('down', 'связь потеряна');
-        banner(`Связь с сервером потеряна. Переподключаемся через ${(delay / 1000).toFixed(0)} с.`, delay);
+        // При живом звонке это наше внутреннее дело — пугать человека нечем.
+        if (!callAlive()) {
+            setRoute('down', 'связь потеряна');
+            banner(`Связь с сервером потеряна. Переподключаемся через ${(delay / 1000).toFixed(0)} с.`, delay);
+        }
         trace(`переподключение через ${Math.round(delay)} мс (попытка ${retry})`, 'warn');
         clearTimeout(retryTimer);
         retryTimer = setTimeout(connect, delay);
@@ -1001,7 +1038,18 @@
 
     async function handle(msg) {
         switch (msg.type) {
-            case 'joined':
+            case 'joined': {
+                /* Переподключились посреди живого звонка: сервер назначает роль
+                   заново, но менять её нельзя. От роли зависит, кто уступает
+                   при встречных offer'ах (см. isPolite) — если роли на двоих
+                   разъедутся, переговоры сломаются. Заодно не пересобираем
+                   соединение, которое и так работает. */
+                if (callAlive()) {
+                    trace('вебсокет вернулся, роль прежняя — звонок не трогаем', 'ok');
+                    peerPresent = true;
+                    showWaiting(false);
+                    break;
+                }
                 initiator = !!(msg.initiator ?? msg.payload?.initiator);
                 trace(`вошли в комнату, роль: ${initiator ? 'инициатор' : 'ожидающий'}`, 'ok');
                 setRoute('none', initiator ? 'начинаем переговоры' : 'ждём второго');
@@ -1015,6 +1063,7 @@
                     await makeOffer();
                 }
                 break;
+            }
 
             case 'peer-joined':
                 trace('второй участник вошёл');
