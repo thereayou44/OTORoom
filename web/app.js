@@ -24,6 +24,10 @@
         tileEditor: $('tileEditor'), tileBoard: $('tileBoard'),
         editorHost: $('editorHost'), boardHost: $('boardHost'),
         editorLang: $('editorLang'), editorClose: $('editorClose'),
+        runBtn: $('runBtn'), runBtnLabel: $('runBtnLabel'),
+        runStdinBtn: $('runStdinBtn'), runStdin: $('runStdin'), runStdinText: $('runStdinText'),
+        runOut: $('runOut'), runOutTitle: $('runOutTitle'),
+        runOutMeta: $('runOutMeta'), runOutBody: $('runOutBody'), runOutClose: $('runOutClose'),
         boardClose: $('boardClose'), boardTools: $('boardTools'),
         boardColors: $('boardColors'), boardWidth: $('boardWidth'),
         boardUndo: $('boardUndo'), boardRedo: $('boardRedo'), boardClear: $('boardClear'),
@@ -60,6 +64,9 @@
     // доска монтируются лениво при первом открытии панели.
     let collab = null, editor = null, board = null;
     let pane = null;
+
+    // Чтобы отличать «я запускаю» от «собеседник запускает» в общем документе.
+    const clientTag = Math.random().toString(36).slice(2, 10);
 
     /* ---------- демонстрация экрана ---------- */
 
@@ -265,6 +272,24 @@
 
     el.editorLang.addEventListener('change', () => {
         if (editor) editor.setLanguage(el.editorLang.value);
+    });
+
+    el.runBtn.addEventListener('click', runCode);
+    el.runOutClose.addEventListener('click', () => { el.runOut.hidden = true; });
+
+    el.runStdinBtn.addEventListener('click', () => {
+        const open = el.runStdin.hidden;
+        el.runStdin.hidden = !open;
+        el.runStdinBtn.setAttribute('aria-pressed', String(open));
+        if (open) el.runStdinText.focus();
+    });
+
+    // Ctrl+Enter прямо из редактора — не тянуться мышкой к кнопке.
+    el.tileEditor.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            runCode();
+        }
     });
 
     /* Подсветка активного инструмента. Зовётся и по клику, и самой доской —
@@ -480,7 +505,137 @@
             color: initiator ? '#6fc3f7' : '#f2b24c',
         });
 
+        // Результат запуска живёт в общем документе — показываем его обоим,
+        // включая того, кто кнопку не нажимал.
+        collab.doc.getMap('run').observe(renderRun);
+
         ch.addEventListener('open', () => trace('канал совместной работы открыт', 'ok'));
+    }
+
+    /* ---------- запуск кода ----------
+
+       Запускает тот, кто нажал, но результат видят оба: он кладётся в общий
+       Yjs-документ, тот же, через который синхронизируется сам редактор.
+       Сервер в этом не участвует — ему мы шлём только сам запуск. */
+
+    let runBusy = false;
+
+    const runState = () => (collab ? collab.doc.getMap('run') : null);
+
+    function publishRun(data) {
+        const m = runState();
+        if (!m) return;
+        collab.doc.transact(() => {
+            for (const [k, v] of Object.entries(data)) m.set(k, v);
+        });
+    }
+
+    /* Показывает то, что лежит в общем документе, — неважно, кто запускал. */
+    function renderRun() {
+        const m = runState();
+        if (!m || !m.get('status')) return;
+
+        const status = m.get('status');
+        el.runOut.hidden = false;
+
+        if (status === 'running') {
+            el.runOutTitle.textContent = m.get('by') === clientTag ? 'Выполняется…' : 'Собеседник запускает…';
+            el.runOutTitle.dataset.state = '';
+            el.runOutMeta.textContent = '';
+            el.runOutBody.textContent = '';
+            return;
+        }
+
+        if (status === 'error') {
+            el.runOutTitle.textContent = 'Не удалось запустить';
+            el.runOutTitle.dataset.state = 'fail';
+            el.runOutMeta.textContent = '';
+            el.runOutBody.textContent = m.get('message') || 'сервис запуска недоступен';
+            return;
+        }
+
+        const code = Number(m.get('exitCode')) || 0;
+        el.runOutTitle.textContent = code === 0 ? 'Готово' : `Код возврата ${code}`;
+        el.runOutTitle.dataset.state = code === 0 ? 'ok' : 'fail';
+
+        const bits = [];
+        if (m.get('durationMs') != null) bits.push(`${m.get('durationMs')} мс`);
+        if (m.get('truncated')) bits.push('вывод обрезан');
+        el.runOutMeta.textContent = bits.join(' · ');
+
+        // stderr отличаем от stdout цветом, а не только порядком
+        el.runOutBody.textContent = '';
+        const out = m.get('stdout') || '';
+        const err = m.get('stderr') || '';
+        if (out) el.runOutBody.append(document.createTextNode(out));
+        if (err) {
+            const b = document.createElement('b');
+            b.textContent = (out && !out.endsWith('\n') ? '\n' : '') + err;
+            el.runOutBody.append(b);
+        }
+        if (!out && !err) {
+            const i = document.createElement('i');
+            i.textContent = 'программа ничего не вывела';
+            el.runOutBody.append(i);
+        }
+    }
+
+    function setRunBusy(on) {
+        runBusy = on;
+        el.runBtn.disabled = on;
+        el.runBtnLabel.textContent = on ? 'Выполняется' : 'Запустить';
+    }
+
+    async function runCode() {
+        if (runBusy || !editor) return;
+
+        const source = editor.getText();
+        if (!source.trim()) { banner('Нечего запускать — редактор пуст.'); return; }
+
+        setRunBusy(true);
+        publishRun({ status: 'running', by: clientTag });
+        renderRun();
+
+        try {
+            const r = await fetch('/api/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    language: el.editorLang.value,
+                    source,
+                    stdin: el.runStdinText.value,
+                }),
+            });
+
+            if (!r.ok) {
+                let message = `сервис запуска ответил ${r.status}`;
+                try {
+                    const e = await r.json();
+                    if (e && e.error) message = e.error;
+                } catch { /* тело не json — оставляем код статуса */ }
+                publishRun({ status: 'error', message, by: clientTag });
+                trace('запуск не удался: ' + message, 'err');
+            } else {
+                const res = await r.json();
+                publishRun({
+                    status: 'done',
+                    stdout: String(res.stdout || ''),
+                    stderr: String(res.stderr || ''),
+                    exitCode: Number(res.exitCode) || 0,
+                    durationMs: Number(res.durationMs) || 0,
+                    truncated: !!res.truncated,
+                    by: clientTag,
+                });
+                trace(`код выполнен, возврат ${Number(res.exitCode) || 0}`,
+                    (Number(res.exitCode) || 0) === 0 ? 'ok' : 'warn');
+            }
+        } catch (e) {
+            publishRun({ status: 'error', message: 'нет связи с сервером', by: clientTag });
+            trace('запуск не удался: ' + e.message, 'err');
+        } finally {
+            setRunBusy(false);
+            renderRun();
+        }
     }
 
     function openPane(which) {
@@ -1401,6 +1556,8 @@
         editor = null;
         board = null;
         pane = null;
+        setRunBusy(false);
+        el.runOut.hidden = true;
         el.tileEditor.hidden = true;
         el.tileBoard.hidden = true;
         setMenuItem(el.miEditor, false);
