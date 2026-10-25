@@ -96,6 +96,37 @@ try {
   ok(false, 'доска: ' + e.message);
 }
 
-a.destroy(); b.destroy();
+// Собеседник перезагрузил страницу. Раньше на этом месте документ
+// уничтожался у обоих: F5 у ученика стирал код и доску у учителя.
+// Теперь оставшийся держит документ, отключается от мёртвого канала и
+// подключается к новому — а вернувшийся получает всё обратно.
+try {
+  const before = a.doc.getText('code').toString();
+  ok(before.length > 0, 'перед перезагрузкой в документе есть код');
+
+  b.destroy();      // страница B умерла вместе со своим документом
+  a.detach();       // A отцепился от мёртвого канала, но документ держит
+  ok(a.provider === null, 'без канала провайдера нет');
+  ok(a.doc.getText('code').toString() === before, 'у оставшегося код на месте');
+
+  // Пока собеседника нет, A продолжает писать — это тоже не должно пропасть.
+  a.doc.getText('code').insert(0, '// пока тебя не было\n');
+
+  const ca2 = fakeChannel(), cb2 = fakeChannel();
+  ca2.peer = cb2; cb2.peer = ca2;
+  a.attach(ca2);
+  const b2 = OTO.createCollab(cb2, { name: 'Ученик', color: '#f2b24c' });
+  await new Promise(r => setTimeout(r, 150));
+
+  const want = a.doc.getText('code').toString();
+  ok(b2.doc.getText('code').toString() === want,
+     'вернувшийся получил весь код, включая написанное без него');
+  ok(a.peers() === 2 && b2.peers() === 2, `снова видят друг друга (${a.peers()}/${b2.peers()})`);
+  b2.destroy();
+} catch (e) {
+  ok(false, 'переподключение: ' + e.message);
+}
+
+a.destroy();
 console.log(fail === 0 ? '\nБАНДЛ РАБОТАЕТ' : `\nПРОВАЛОВ: ${fail}`);
 process.exit(fail ? 1 : 0);

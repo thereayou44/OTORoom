@@ -26,6 +26,14 @@ export interface ProviderOptions {
   name?: string;
   /** Цвет курсора и выделения. */
   color?: string;
+  /**
+   * Готовый Awareness, который переживёт этот провайдер. Нужен, когда
+   * канал меняется, а документ остаётся: собеседник перезагрузил страницу,
+   * и тот же Y.Doc подключается к новому каналу. Редактор и доска держат
+   * ссылку на awareness — новый объект им пришлось бы пересоздавать.
+   * Не передан — провайдер заводит свой и сам его уничтожит.
+   */
+  awareness?: awarenessProtocol.Awareness;
 }
 
 /**
@@ -44,13 +52,15 @@ export class DataChannelProvider {
   private queue: Uint8Array[] = [];
   private destroyed = false;
   private synced = false;
+  private ownsAwareness: boolean;
 
   private onSyncedCb: (() => void) | null = null;
 
   constructor(doc: Y.Doc, channel: RTCDataChannel, opts: ProviderOptions = {}) {
     this.doc = doc;
     this.channel = channel;
-    this.awareness = new awarenessProtocol.Awareness(doc);
+    this.ownsAwareness = !opts.awareness;
+    this.awareness = opts.awareness ?? new awarenessProtocol.Awareness(doc);
 
     if (opts.name || opts.color) {
       this.awareness.setLocalStateField('user', {
@@ -89,12 +99,19 @@ export class DataChannelProvider {
     this.channel.removeEventListener('bufferedamountlow', this.flushQueue);
     this.channel.removeEventListener('close', this.handleClose);
 
-    awarenessProtocol.removeAwarenessStates(
-      this.awareness,
-      [this.doc.clientID],
-      'provider destroyed',
-    );
-    this.awareness.destroy();
+    if (this.ownsAwareness) {
+      awarenessProtocol.removeAwarenessStates(
+        this.awareness,
+        [this.doc.clientID],
+        'provider destroyed',
+      );
+      this.awareness.destroy();
+    } else {
+      // Awareness общий и переживёт нас: своё состояние (имя, курсор)
+      // оставляем для следующего канала, а чужое убираем — собеседник
+      // ушёл вместе с этим каналом.
+      this.handleClose();
+    }
   }
 
   // ---------- исходящее ----------
