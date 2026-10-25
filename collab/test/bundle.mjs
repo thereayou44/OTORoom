@@ -68,6 +68,34 @@ try {
   ok(false, 'редактор: ' + e.message);
 }
 
+// Доска, открытая уже после того, как собеседник перелистнул. Раньше она
+// оставалась на первой странице: о текущей узнавала только из изменений,
+// а изменений после открытия больше не было.
+try {
+  // В jsdom нет настоящего canvas — подставляем 2D-контекст, где любой
+  // метод ничего не делает. Рисование тут не проверяем, только страницы.
+  const noop = () => {};
+  const fakeCtx = new Proxy({}, { get: () => noop, set: () => true });
+  window.HTMLCanvasElement.prototype.getContext = () => fakeCtx;
+
+  const meta = a.doc.getMap('board-meta');
+  meta.set('pages', 2);
+  meta.set('current', 1);
+  await new Promise(r => setTimeout(r, 100));
+
+  let seen = null;
+  const host = window.document.createElement('div');
+  window.document.body.append(host);
+  const board = b.mountBoard(host, { onPagesChange: (page, total) => { seen = { page, total }; } });
+
+  ok(seen && seen.page === 1 && seen.total === 2,
+     `доска открылась сразу на текущей странице (${JSON.stringify(seen)})`);
+  ok(board.page() === 1, 'и сама доска считает её текущей');
+  board.destroy();
+} catch (e) {
+  ok(false, 'доска: ' + e.message);
+}
+
 a.destroy(); b.destroy();
 console.log(fail === 0 ? '\nБАНДЛ РАБОТАЕТ' : `\nПРОВАЛОВ: ${fail}`);
 process.exit(fail ? 1 : 0);

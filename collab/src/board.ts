@@ -638,8 +638,13 @@ export function createBoard(opts: BoardOptions): BoardHandle {
   };
   meta.observe(metaObserver);
 
+  let destroyed = false;
+
   fit();
-  notifyPages();
+  /* Наблюдатель срабатывает только на изменения. Если доску открыли, когда
+     собеседник уже перелистнул, изменений больше не будет — и мы остались
+     бы на первой странице. Поэтому текущую страницу читаем сразу. */
+  metaObserver();
 
   return {
     pages: () => pageCount(),
@@ -673,6 +678,10 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     undo() { undoManager.undo(); },
     redo() { undoManager.redo(); },
     destroy() {
+      // Повторный вызов безопасен: collab.destroy() тоже уничтожает доску,
+      // и второй unobserve засыпал бы консоль предупреждениями Yjs.
+      if (destroyed) return;
+      destroyed = true;
       closeTextInput();
       document.removeEventListener('paste', onPaste);
       meta.unobserve(metaObserver);
