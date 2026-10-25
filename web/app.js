@@ -68,6 +68,27 @@
     // Чтобы отличать «я запускаю» от «собеседник запускает» в общем документе.
     const clientTag = Math.random().toString(36).slice(2, 10);
 
+    /* Идентификатор вкладки для сервера. sessionStorage переживает F5, но у
+       другой вкладки он свой. По нему сервер узнаёт, что вернулась та же
+       вкладка, а не третий участник, и отдаёт ей место её же «призрака» —
+       старого сокета, который ещё не признан мёртвым (см. Hub.Join).
+       Раньше в этот момент приходило «комната занята», и вкладка больше не
+       возвращалась. */
+    const tabSession = (() => {
+        const make = () => (crypto.randomUUID ? crypto.randomUUID()
+            : Array.from(crypto.getRandomValues(new Uint8Array(16)),
+                (b) => b.toString(16).padStart(2, '0')).join(''));
+        try {
+            let id = sessionStorage.getItem('oto.session');
+            if (!id) { id = make(); sessionStorage.setItem('oto.session', id); }
+            return id;
+        } catch {
+            // Хранилище недоступно (приватный режим) — без возобновления
+            // после F5, но смену сети в пределах страницы переживём.
+            return make();
+        }
+    })();
+
     /* ---------- демонстрация экрана ---------- */
 
     /* Что сейчас уходит в эфир по видео: экран важнее камеры. */
@@ -500,16 +521,26 @@
     function wireCollab(ch) {
         if (!window.OTO) { trace('модуль совместной работы не загрузился', 'err'); return; }
 
+        ch.addEventListener('open', () => trace('канал совместной работы открыт', 'ok'));
+
+        /* Документ уже есть — значит собеседник переподключился (F5, смена
+           сети). Подключаем к новому каналу тот же документ: код, доска и
+           вывод остаются, а Yjs сам досинхронизирует вернувшегося. */
+        if (collab) {
+            collab.attach(ch);
+            trace('документ подключён к новому каналу — содержимое сохранено', 'ok');
+            return;
+        }
+
         collab = window.OTO.createCollab(ch, {
             name: initiator ? 'Инициатор' : 'Участник',
             color: initiator ? '#6fc3f7' : '#f2b24c',
         });
 
         // Результат запуска живёт в общем документе — показываем его обоим,
-        // включая того, кто кнопку не нажимал.
+        // включая того, кто кнопку не нажимал. Подписка одна на весь срок
+        // жизни документа, поэтому только здесь, при создании.
         collab.doc.getMap('run').observe(renderRun);
-
-        ch.addEventListener('open', () => trace('канал совместной работы открыт', 'ok'));
     }
 
     /* ---------- запуск кода ----------
@@ -651,6 +682,7 @@
 
         if (pane === which) which = null;
         pane = which;
+        showWaiting(waitingOn);   // закрыли панель без собеседника — вернуть заставку
 
         el.tileEditor.hidden = which !== 'editor';
         el.tileBoard.hidden = which !== 'board';
@@ -1150,7 +1182,13 @@
         ws.addEventListener('open', () => {
             retry = 0;
             trace('вебсокет открыт');
-            send('join', { room: roomId });
+            // resume: RTCPeerConnection ещё живо — это смена сети, а не F5,
+            // и сервер подменит сокет тихо, не тревожа собеседника.
+            send('join', {
+                room: roomId,
+                session: tabSession,
+                resume: !!pc && pc.connectionState !== 'closed',
+            });
             startWsKeepalive();
         });
 
@@ -1199,6 +1237,18 @@
     async function handle(msg) {
         switch (msg.type) {
             case 'joined': {
+                /* Сервер подменил наш старый сокет этим, а RTCPeerConnection
+                   живо: сменилась сеть (VPN, Wi-Fi → мобильный). Собеседник
+                   ничего не заметил, роль прежняя. Перезапускаем ICE, чтобы
+                   проложить маршрут по новой сети, — звонок продолжается без
+                   пересборки соединения. */
+                if (msg.resumed && pc && pc.connectionState !== 'closed') {
+                    trace('вернулись после смены сети — прокладываем маршрут заново', 'ok');
+                    peerPresent = true;
+                    showWaiting(false);
+                    tryRecover('сеть сменилась', true);
+                    break;
+                }
                 /* Переподключились посреди живого звонка: сервер назначает роль
                    заново, но менять её нельзя. От роли зависит, кто уступает
                    при встречных offer'ах (см. isPolite) — если роли на двоих
@@ -1292,6 +1342,13 @@
             case 'bye':
                 trace('второй участник вышел', 'warn');
                 peerPresent = false;
+                /* Мы остались в комнате одни — то есть теперь «первые». Сервер
+                   сделает инициатором того, кто войдёт следующим, поэтому свою
+                   роль сбрасываем. Иначе, если выйдет и вернётся тот, кто
+                   заходил первым, инициаторами окажутся оба: оба заведут
+                   каналы, оба будут невежливы во встречных offer'ах, и
+                   переговоры не сойдутся. */
+                initiator = false;
                 teardownPeer();
                 showWaiting(true);
                 setRoute('none', 'ждём второго');
@@ -1501,10 +1558,13 @@
     /* Перезапуск ICE: собираем маршрут заново, не разрывая звонок. Работает
        у обеих сторон — restartIce поднимает negotiationneeded, а offer теперь
        шлёт каждый. */
-    function tryRecover(why) {
+    /* force — мимо кулдауна. Нужно, когда сигналинг только что вернулся после
+       смены сети: прошлая попытка могла уйти в мёртвый сокет и пропасть, а
+       кулдаун задержал бы единственную, у которой есть шанс. */
+    function tryRecover(why, force = false) {
         if (!pc || leaving) return;
         const now = Date.now();
-        if (now - lastRecover < RECOVER_COOLDOWN) return;
+        if (!force && now - lastRecover < RECOVER_COOLDOWN) return;
         lastRecover = now;
         cancelRecovery();
 
@@ -1556,17 +1616,13 @@
         meta = null;
         chat = null;
         imgRx = {};
-        // Совместная работа живёт на data channel этого соединения — умирает с ним.
-        if (collab) { collab.destroy(); collab = null; }
-        editor = null;
-        board = null;
-        pane = null;
+        /* Канал умер вместе с соединением, а документ — нет. Раньше здесь
+           стоял collab.destroy(): F5 у одного стирал код и доску у обоих.
+           Теперь отцепляемся от мёртвого канала, а документ, редактор и доска
+           остаются на экране; с новым каналом документ подключится снова
+           (wireCollab). Уничтожается он только при выходе из комнаты. */
+        if (collab) collab.detach();
         setRunBusy(false);
-        el.runOut.hidden = true;
-        el.tileEditor.hidden = true;
-        el.tileBoard.hidden = true;
-        setMenuItem(el.miEditor, false);
-        setMenuItem(el.miBoard, false);
         applyLayout();
         vizAnalyser = null;
         stopViz();
@@ -1658,7 +1714,14 @@
 
     function stopClock() { clearInterval(clockTimer); clockTimer = 0; }
 
-    function showWaiting(on) { el.waiting.hidden = !on; }
+    /* Заставка «ждём второго» закрывает всю сцену. При открытом редакторе
+       или доске она не нужна: собеседник переподключается, а работа с
+       документом продолжается — прятать её под заставкой незачем. */
+    let waitingOn = true;   // в разметке заставка видна изначально
+    function showWaiting(on) {
+        waitingOn = on;
+        el.waiting.hidden = !on || !!pane;
+    }
 
     /* ---------- управление ---------- */
 
@@ -1684,12 +1747,33 @@
         leaving = true;
         send('bye');
         teardownPeer();
+        if (collab) { collab.destroy(); collab = null; }
         stopBoost();
         if (screenStream) screenStream.getTracks().forEach((t) => t.stop());
         if (localStream) localStream.getTracks().forEach((t) => t.stop());
         if (ws) ws.close();
         location.href = 'index.html?room=' + encodeURIComponent(roomId);
     }
+
+    /* Сеть вернулась (например, после переключения VPN). Не ждём, пока
+       экспоненциальная пауза переподключения дойдёт до следующей попытки, —
+       поднимаем сигналинг сразу. Старый TCP после смены сети почти наверняка
+       мёртв, даже если браузер этого ещё не заметил, поэтому открытый сокет
+       тоже переоткрываем. Дальше сервер подменит сокет тихо, а 'joined' с
+       resumed перезапустит ICE. navigator.connection сюда не подключаем:
+       его 'change' срабатывает и на колебания оценки скорости, это дало бы
+       лишние переподключения посреди урока. */
+    window.addEventListener('online', () => {
+        if (leaving) return;
+        trace('сеть вернулась — переподключаем сигналинг', 'warn');
+        retry = 0;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.close();             // close-обработчик сам запустит переподключение
+        } else if (!ws || ws.readyState === WebSocket.CLOSED) {
+            clearTimeout(retryTimer);
+            connect();
+        }
+    });
 
     window.addEventListener('pagehide', () => {
         if (!leaving) { leaving = true; send('bye'); }
