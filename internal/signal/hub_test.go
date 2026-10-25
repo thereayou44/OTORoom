@@ -28,7 +28,7 @@ func recvType(t *testing.T, c *Client) string {
 
 func mustJoin(t *testing.T, h *Hub, room string, c *Client) {
 	t.Helper()
-	if _, err := h.Join(room, c); err != nil {
+	if _, _, err := h.Join(room, c, "", false); err != nil {
 		t.Fatalf("Join(%q) упал: %v", room, err)
 	}
 }
@@ -37,10 +37,10 @@ func TestJoin_Initiator(t *testing.T) {
 	h := NewHub()
 	a, b := fakeClient(), fakeClient()
 
-	if init, err := h.Join("algo-1", a); err != nil || init {
+	if init, _, err := h.Join("algo-1", a, "", false); err != nil || init {
 		t.Fatalf("первый: initiator=%v err=%v, хочу false/nil", init, err)
 	}
-	if init, err := h.Join("algo-1", b); err != nil || !init {
+	if init, _, err := h.Join("algo-1", b, "", false); err != nil || !init {
 		t.Fatalf("второй: initiator=%v err=%v, хочу true/nil", init, err)
 	}
 	if got := recvType(t, a); got != TypePeerJoined {
@@ -55,7 +55,7 @@ func TestJoin_RoomFull(t *testing.T) {
 	mustJoin(t, h, "algo-1", a)
 	mustJoin(t, h, "algo-1", b)
 
-	if _, err := h.Join("algo-1", c); err != ErrRoomFull {
+	if _, _, err := h.Join("algo-1", c, "", false); err != ErrRoomFull {
 		t.Fatalf("третий должен получить ErrRoomFull, получил %v", err)
 	}
 	if a.room != "algo-1" || b.room != "algo-1" {
@@ -66,7 +66,7 @@ func TestJoin_RoomFull(t *testing.T) {
 func TestJoin_BadName(t *testing.T) {
 	h := NewHub()
 	for _, name := range []string{"A", "x", "имя", "with space", ""} {
-		if _, err := h.Join(name, fakeClient()); err != ErrBadRoom {
+		if _, _, err := h.Join(name, fakeClient(), "", false); err != ErrBadRoom {
 			t.Fatalf("имя %q: хочу ErrBadRoom, получил %v", name, err)
 		}
 	}
@@ -113,7 +113,7 @@ func TestLeave_FreesSlot(t *testing.T) {
 	mustJoin(t, h, "algo-1", b)
 	h.Leave(a)
 
-	if _, err := h.Join("algo-1", c); err != nil {
+	if _, _, err := h.Join("algo-1", c, "", false); err != nil {
 		t.Fatalf("после ухода одного слот должен освободиться, получил %v", err)
 	}
 }
@@ -161,7 +161,7 @@ func TestConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			c := fakeClient()
-			if _, err := h.Join("algo-1", c); err == nil {
+			if _, _, err := h.Join("algo-1", c, "", false); err == nil {
 				h.Broadcast(c, []byte(`{"type":"ice"}`))
 			}
 			h.Leave(c)
@@ -174,5 +174,137 @@ func TestConcurrent(t *testing.T) {
 	h.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("после ухода всех комнат должно быть 0, осталось %d", n)
+	}
+}
+
+// Сессии вкладок (см. Hub.Join). Идентификаторы — в формате, который шлёт
+// фронт: crypto.randomUUID().
+const (
+	tabA = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+	tabB = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+	tabC = "cccccccc-3333-4333-8333-cccccccccccc"
+)
+
+// twoInRoom сажает A и B и вычищает уведомление, которое получил A.
+func twoInRoom(t *testing.T, h *Hub) (a, b *Client) {
+	t.Helper()
+	a, b = fakeClient(), fakeClient()
+	if _, _, err := h.Join("algo-1", a, tabA, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.Join("algo-1", b, tabB, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := recvType(t, a); got != TypePeerJoined {
+		t.Fatalf("A должен был получить peer-joined, получил %q", got)
+	}
+	return a, b
+}
+
+func TestJoin_ReloadedTabTakesGhostsPlace(t *testing.T) {
+	// A перезагрузил страницу, а его старый сокет сервер ещё считает живым.
+	// Раньше тут был room-full, и вкладка больше не возвращалась.
+	h := NewHub()
+	_, b := twoInRoom(t, h)
+
+	a2 := fakeClient()
+	init, resumed, err := h.Join("algo-1", a2, tabA, false)
+	if err != nil {
+		t.Fatalf("та же вкладка не должна получать room-full: %v", err)
+	}
+	if !resumed || !init {
+		t.Fatalf("resumed=%v initiator=%v: вернувшаяся вкладка начинает переговоры заново", resumed, init)
+	}
+
+	// Для B старый A ушёл, новый пришёл: B разберёт мёртвое соединение и
+	// дождётся offer'а. Порядок важен.
+	if got := recvType(t, b); got != TypePeerLeft {
+		t.Fatalf("B первым должен получить peer-left, получил %q", got)
+	}
+	if got := recvType(t, b); got != TypePeerJoined {
+		t.Fatalf("B следом должен получить peer-joined, получил %q", got)
+	}
+}
+
+func TestJoin_ResumeAfterNetworkChangeIsSilent(t *testing.T) {
+	// A сменил сеть: страница жива, RTCPeerConnection тоже. Звонок спасает
+	// перезапуск ICE — B не должен ничего заметить и ничего разбирать.
+	h := NewHub()
+	_, b := twoInRoom(t, h)
+
+	if _, resumed, err := h.Join("algo-1", fakeClient(), tabA, true); err != nil || !resumed {
+		t.Fatalf("resumed=%v err=%v", resumed, err)
+	}
+	if got := recvType(t, b); got != "" {
+		t.Fatalf("при тихой замене B не должен ничего получать, получил %q", got)
+	}
+}
+
+func TestJoin_OtherTabStillGetsRoomFull(t *testing.T) {
+	h := NewHub()
+	twoInRoom(t, h)
+
+	if _, _, err := h.Join("algo-1", fakeClient(), tabC, false); err != ErrRoomFull {
+		t.Fatalf("третья вкладка должна получить ErrRoomFull, получила %v", err)
+	}
+}
+
+func TestJoin_EmptyOrGarbageSessionNeverMatches(t *testing.T) {
+	// Пустая сессия — старый фронт из кэша, мусор — неизвестно что. Ни то
+	// ни другое не должно выкидывать чужое соединение.
+	for _, s := range []string{"", "short", "имя-кириллицей", "with spaces here"} {
+		h := NewHub()
+		if _, _, err := h.Join("algo-1", fakeClient(), s, false); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := h.Join("algo-1", fakeClient(), s, false); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := h.Join("algo-1", fakeClient(), s, true); err != ErrRoomFull {
+			t.Fatalf("сессия %q: ждали ErrRoomFull, получили %v", s, err)
+		}
+	}
+}
+
+func TestLeave_GhostLeavingDoesNotDisturbPeer(t *testing.T) {
+	// Старый сокет A рано или поздно умирает, и его read отрабатывает
+	// defer Leave. К этому моменту B уже договаривается с новым A — лишний
+	// peer-left сломал бы ему свежий звонок.
+	h := NewHub()
+	a, b := twoInRoom(t, h)
+	a2 := fakeClient()
+	if _, _, err := h.Join("algo-1", a2, tabA, true); err != nil {
+		t.Fatal(err)
+	}
+
+	h.Leave(a)
+
+	if got := recvType(t, b); got != "" {
+		t.Fatalf("уход призрака не должен доходить до B, получил %q", got)
+	}
+	// Новый A на месте: комната по-прежнему полна.
+	if _, _, err := h.Join("algo-1", fakeClient(), tabC, false); err != ErrRoomFull {
+		t.Fatalf("Leave призрака освободил чужое место: %v", err)
+	}
+}
+
+func TestBroadcast_GhostIsMuted(t *testing.T) {
+	// Призрак мог дочитать из старого сокета запоздалый ICE-кандидат —
+	// он относится к мёртвому соединению и B не нужен.
+	h := NewHub()
+	a, b := twoInRoom(t, h)
+	a2 := fakeClient()
+	if _, _, err := h.Join("algo-1", a2, tabA, true); err != nil {
+		t.Fatal(err)
+	}
+
+	h.Broadcast(a, []byte(`{"type":"ice"}`))
+	if got := recvType(t, b); got != "" {
+		t.Fatalf("сообщение призрака дошло до B: %q", got)
+	}
+
+	h.Broadcast(a2, []byte(`{"type":"ice"}`))
+	if got := recvType(t, b); got != TypeICE {
+		t.Fatalf("сообщение нового соединения не дошло: %q", got)
 	}
 }

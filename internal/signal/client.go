@@ -16,6 +16,8 @@ type Client struct {
 	buffer chan []byte
 	hub    *Hub
 	room   string
+	// Идентификатор вкладки. Пишется и читается только под Hub.mu.
+	session string
 }
 
 func NewClient(conn *websocket.Conn, hub *Hub) *Client {
@@ -23,6 +25,17 @@ func NewClient(conn *websocket.Conn, hub *Hub) *Client {
 		conn:   conn,
 		buffer: make(chan []byte, 32),
 		hub:    hub,
+	}
+}
+
+// kick обрывает соединение, которое заменила его же вкладка (Hub.Join).
+// Сокет там, скорее всего, и так мёртвый — сеть сменилась, — но ждать, пока
+// это заметит пинг, незачем. CloseNow безопасно звать из чужой горутины;
+// после него read выйдет и отработает defer Leave, а тот ничего не сделает:
+// в комнате этого клиента уже нет. В тестах хаба сокета нет вовсе.
+func (c *Client) kick() {
+	if c.conn != nil {
+		_ = c.conn.CloseNow()
 	}
 }
 
@@ -53,12 +66,12 @@ func (c *Client) read(ctx context.Context, cancel context.CancelFunc) {
 				c.sendMsg(Message{Type: TypeError, Message: "bad-payload"})
 				return
 			}
-			initiator, err := c.hub.Join(p.Room, c)
+			initiator, resumed, err := c.hub.Join(p.Room, c, p.Session, p.Resume)
 			if err != nil {
 				c.sendMsg(Message{Type: TypeError, Message: errorCode(err)})
 				return
 			}
-			c.sendMsg(Message{Type: TypeJoined, IsInitiator: initiator})
+			c.sendMsg(Message{Type: TypeJoined, IsInitiator: initiator, Resumed: resumed})
 
 		case TypeOffer, TypeAnswer, TypeICE:
 			if c.room == "" {
