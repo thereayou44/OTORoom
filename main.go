@@ -15,6 +15,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/thereayou44/OTORoom.git/internal/config"
 	"github.com/thereayou44/OTORoom.git/internal/httpapi"
+	"github.com/thereayou44/OTORoom.git/internal/runner"
 	sig "github.com/thereayou44/OTORoom.git/internal/signal"
 )
 
@@ -31,7 +32,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	api := httpapi.New(cfg, hub, sub)
+	// Код учеников исполняет Wandbox. Перейти на свой Docker — заменить эту
+	// строку на другую реализацию runner.Runner; больше ничего не трогать.
+	api := httpapi.New(cfg, hub, sub, runner.NewWandbox(0))
 
 	srv := httpapi.NewHTTPServer(cfg.Addr, api.Handler())
 

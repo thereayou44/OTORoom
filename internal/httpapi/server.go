@@ -10,6 +10,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/thereayou44/OTORoom.git/internal/config"
+	"github.com/thereayou44/OTORoom.git/internal/runner"
 	"github.com/thereayou44/OTORoom.git/internal/signal"
 )
 
@@ -17,10 +18,21 @@ type Server struct {
 	hub *signal.Hub
 	cfg config.Config
 	web fs.FS
+
+	// Интерфейс, а не *runner.WandboxRunner: замена Wandbox на Docker —
+	// это одна строка в main.go, сюда она не дойдёт.
+	runner   runner.Runner
+	runSlots chan struct{} // семафор одновременных запусков, см. run.go
 }
 
-func New(cfg config.Config, hub *signal.Hub, web fs.FS) *Server {
-	return &Server{cfg: cfg, hub: hub, web: web}
+func New(cfg config.Config, hub *signal.Hub, web fs.FS, run runner.Runner) *Server {
+	return &Server{
+		cfg:      cfg,
+		hub:      hub,
+		web:      web,
+		runner:   run,
+		runSlots: make(chan struct{}, maxParallelRuns),
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -28,6 +40,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/ice", s.handleICE)
+	mux.HandleFunc("POST /api/run", s.handleRun)
 	mux.HandleFunc("GET /ws", s.handleWS)
 	mux.Handle("GET /", noCache(http.FileServer(http.FS(s.web))))
 

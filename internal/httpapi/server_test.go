@@ -13,8 +13,9 @@ import (
 
 func do(t *testing.T, cfg config.Config, path string) *httptest.ResponseRecorder {
 	t.Helper()
-	// Статика этим тестам не нужна — пустой ФС в памяти хватает.
-	s := New(cfg, signal.NewHub(), fstest.MapFS{})
+	// Статика и запуск кода этим тестам не нужны — пустой ФС в памяти и
+	// фейковый раннер из run_test.go.
+	s := New(cfg, signal.NewHub(), fstest.MapFS{}, &fakeRunner{})
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 	return rec
