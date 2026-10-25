@@ -554,8 +554,13 @@
             return;
         }
 
+        // -1 — программу остановил сервис запуска до завершения (обычно за
+        // слишком большой вывод). Настоящих отрицательных кодов не бывает,
+        // а «Код возврата -1» ученику ничего бы не объяснил.
         const code = Number(m.get('exitCode')) || 0;
-        el.runOutTitle.textContent = code === 0 ? 'Готово' : `Код возврата ${code}`;
+        el.runOutTitle.textContent = code === 0 ? 'Готово'
+            : code < 0 ? 'Программа остановлена'
+            : `Код возврата ${code}`;
         el.runOutTitle.dataset.state = code === 0 ? 'ok' : 'fail';
 
         const bits = [];

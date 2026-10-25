@@ -19,10 +19,12 @@ const (
 	// Go по умолчанию шлёт Go-http-client/1.1 — на него не полагаемся.
 	userAgent = "OTORoom/1.0"
 
-	// Wandbox сам молча режет вывод до 65536 символов, без всякого флага.
-	// Наш лимит меньше этого порога, поэтому их тихую обрезку мы всегда
-	// поймаем своей и честно выставим IsTruncated. Поднимать выше 64 КиБ
-	// нельзя — иначе обрезанный ими вывод покажется ученику полным.
+	// Wandbox сам молча обрывает слишком большой вывод — без всякого флага
+	// (проверено: 70 000 байт проходят целиком, 5 млн символов обрываются
+	// на 65 536 и приходят с пустым status). Наш лимит заметно ниже их
+	// порога, поэтому их тихий обрыв мы всегда поймаем своей обрезкой и
+	// честно выставим IsTruncated. Поднимать выше ~64 КиБ нельзя — иначе
+	// оборванный ими вывод покажется ученику полным.
 	defaultMaxOutput = 32 << 10
 
 	// Защита памяти от стороннего сервиса: тело ответа больше этого не
@@ -76,7 +78,7 @@ type wandboxRequest struct {
 }
 
 type wandboxResponse struct {
-	Status        string `json:"status"` // код возврата, но строкой: "0", "1", "139"
+	Status        string `json:"status"` // код возврата строкой: "0", "1", "139"; "" — остановлена ими
 	CompilerError string `json:"compiler_error"`
 	ProgramOutput string `json:"program_output"`
 	ProgramError  string `json:"program_error"`
@@ -132,11 +134,20 @@ func (w *WandboxRunner) Run(ctx context.Context, req Request) (Response, error) 
 	}
 	elapsed := time.Since(start)
 
-	// Не распарсилось — ошибка, а не молчаливый 0: иначе битый ответ
-	// показался бы ученику успешным запуском.
-	code, err := strconv.Atoi(wr.Status)
-	if err != nil {
-		return Response{}, fmt.Errorf("wandbox: непонятный status %q: %w", wr.Status, err)
+	// Пустой status Wandbox присылает, когда сам остановил программу до
+	// завершения — проверено на огромном выводе. Запуск состоялся и вывод
+	// есть, так что это результат, а не поломка сервиса: кода возврата
+	// просто нет, и вывод по определению неполный.
+	//
+	// А вот непустой, но нечисловой status — уже битый ответ. Это ошибка,
+	// а не молчаливый 0: иначе он показался бы ученику успешным запуском.
+	stopped := wr.Status == ""
+	code := ExitStopped
+	if !stopped {
+		code, err = strconv.Atoi(wr.Status)
+		if err != nil {
+			return Response{}, fmt.Errorf("wandbox: непонятный status %q: %w", wr.Status, err)
+		}
 	}
 
 	// У Python нет этапа компиляции: синтаксическая ошибка приходит в
@@ -150,7 +161,7 @@ func (w *WandboxRunner) Run(ctx context.Context, req Request) (Response, error) 
 		Stderr:      stderr,
 		ExitCode:    code,
 		Duration:    elapsed,
-		IsTruncated: cutOut || cutErr,
+		IsTruncated: cutOut || cutErr || stopped,
 	}, nil
 }
 

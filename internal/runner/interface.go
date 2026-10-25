@@ -28,10 +28,16 @@ type Request struct {
 type Response struct {
 	Stdout      string
 	Stderr      string
-	ExitCode    int
+	ExitCode    int // ExitStopped, если программа не завершилась сама
 	Duration    time.Duration
 	IsTruncated bool // вывод не влез в лимит и обрезан
 }
+
+// ExitStopped — код возврата программы, которую остановил сервис запуска
+// до того, как она завершилась сама (например, за слишком большой вывод).
+// Запуск при этом состоялся и вывод есть, поэтому это результат, а не error.
+// Настоящих кодов возврата меньше нуля не бывает, так что путаницы нет.
+const ExitStopped = -1
 
 type Language string
 

@@ -153,6 +153,21 @@ func TestRun_UnsupportedLanguageSkipsNetwork(t *testing.T) {
 	}
 }
 
+func TestRun_EmptyStatusMeansStopped(t *testing.T) {
+	// Так Wandbox отвечает на огромный вывод (проверено на живом сервисе):
+	// программу остановили, вывод есть, кода возврата нет. Это результат
+	// запуска, а не поломка сервиса — раньше ученик видел «сервис недоступен».
+	_, r := newFake(t, http.StatusOK, wb("", "", "ж", ""), 0)
+
+	res, err := r.Run(context.Background(), Request{Language: LangPython, Code: "x"})
+	if err != nil {
+		t.Fatalf("пустой status — не ошибка сервиса: %v", err)
+	}
+	if res.ExitCode != ExitStopped || !res.IsTruncated || res.Stdout != "ж" {
+		t.Fatalf("ждали остановленную программу с неполным выводом: %+v", res)
+	}
+}
+
 func TestRun_BadStatusIsError(t *testing.T) {
 	// Молчаливый 0 показал бы ученику битый ответ как успешный запуск.
 	_, r := newFake(t, http.StatusOK, wb("abc", "", "42", ""), 0)
