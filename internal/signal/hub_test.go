@@ -177,15 +177,14 @@ func TestConcurrent(t *testing.T) {
 	}
 }
 
-// Сессии вкладок (см. Hub.Join). Идентификаторы — в формате, который шлёт
-// фронт: crypto.randomUUID().
+// Сессии в формате фронта — crypto.randomUUID().
 const (
 	tabA = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
 	tabB = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
 	tabC = "cccccccc-3333-4333-8333-cccccccccccc"
 )
 
-// twoInRoom сажает A и B и вычищает уведомление, которое получил A.
+// twoInRoom сажает A и B и вычищает peer-joined у A.
 func twoInRoom(t *testing.T, h *Hub) (a, b *Client) {
 	t.Helper()
 	a, b = fakeClient(), fakeClient()
@@ -202,8 +201,7 @@ func twoInRoom(t *testing.T, h *Hub) (a, b *Client) {
 }
 
 func TestJoin_ReloadedTabTakesGhostsPlace(t *testing.T) {
-	// A перезагрузил страницу, а его старый сокет сервер ещё считает живым.
-	// Раньше тут был room-full, и вкладка больше не возвращалась.
+	// A перезагрузился, старый сокет сервер ещё считает живым.
 	h := NewHub()
 	_, b := twoInRoom(t, h)
 
@@ -216,8 +214,7 @@ func TestJoin_ReloadedTabTakesGhostsPlace(t *testing.T) {
 		t.Fatalf("resumed=%v initiator=%v: вернувшаяся вкладка начинает переговоры заново", resumed, init)
 	}
 
-	// Для B старый A ушёл, новый пришёл: B разберёт мёртвое соединение и
-	// дождётся offer'а. Порядок важен.
+	// Порядок важен: B разбирает мёртвое соединение, потом ждёт offer.
 	if got := recvType(t, b); got != TypePeerLeft {
 		t.Fatalf("B первым должен получить peer-left, получил %q", got)
 	}
@@ -227,8 +224,6 @@ func TestJoin_ReloadedTabTakesGhostsPlace(t *testing.T) {
 }
 
 func TestJoin_ResumeAfterNetworkChangeIsSilent(t *testing.T) {
-	// A сменил сеть: страница жива, RTCPeerConnection тоже. Звонок спасает
-	// перезапуск ICE — B не должен ничего заметить и ничего разбирать.
 	h := NewHub()
 	_, b := twoInRoom(t, h)
 
@@ -250,8 +245,6 @@ func TestJoin_OtherTabStillGetsRoomFull(t *testing.T) {
 }
 
 func TestJoin_EmptyOrGarbageSessionNeverMatches(t *testing.T) {
-	// Пустая сессия — старый фронт из кэша, мусор — неизвестно что. Ни то
-	// ни другое не должно выкидывать чужое соединение.
 	for _, s := range []string{"", "short", "имя-кириллицей", "with spaces here"} {
 		h := NewHub()
 		if _, _, err := h.Join("algo-1", fakeClient(), s, false); err != nil {
@@ -267,9 +260,7 @@ func TestJoin_EmptyOrGarbageSessionNeverMatches(t *testing.T) {
 }
 
 func TestLeave_GhostLeavingDoesNotDisturbPeer(t *testing.T) {
-	// Старый сокет A рано или поздно умирает, и его read отрабатывает
-	// defer Leave. К этому моменту B уже договаривается с новым A — лишний
-	// peer-left сломал бы ему свежий звонок.
+	// Старый сокет A умирает позже, когда B уже договаривается с новым A.
 	h := NewHub()
 	a, b := twoInRoom(t, h)
 	a2 := fakeClient()
@@ -282,15 +273,12 @@ func TestLeave_GhostLeavingDoesNotDisturbPeer(t *testing.T) {
 	if got := recvType(t, b); got != "" {
 		t.Fatalf("уход призрака не должен доходить до B, получил %q", got)
 	}
-	// Новый A на месте: комната по-прежнему полна.
 	if _, _, err := h.Join("algo-1", fakeClient(), tabC, false); err != ErrRoomFull {
 		t.Fatalf("Leave призрака освободил чужое место: %v", err)
 	}
 }
 
 func TestBroadcast_GhostIsMuted(t *testing.T) {
-	// Призрак мог дочитать из старого сокета запоздалый ICE-кандидат —
-	// он относится к мёртвому соединению и B не нужен.
 	h := NewHub()
 	a, b := twoInRoom(t, h)
 	a2 := fakeClient()
