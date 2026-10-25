@@ -12,8 +12,7 @@ import (
 	"unicode/utf8"
 )
 
-// fakeWandbox — поддельный Wandbox на httptest.Server: отвечает заготовкой
-// и запоминает, что к нему пришло. В живой сервис тесты не ходят.
+// fakeWandbox отвечает заготовкой и запоминает, что к нему пришло.
 type fakeWandbox struct {
 	mu    sync.Mutex // хендлер пишет из горутины сервера, тест читает из своей
 	calls int
@@ -27,7 +26,6 @@ func (f *fakeWandbox) snapshot() (int, wandboxRequest, string) {
 	return f.calls, f.req, f.ua
 }
 
-// newFake поднимает поддельный сервис и раннер, направленный на него.
 func newFake(t *testing.T, status int, body string, maxOutput int) (*fakeWandbox, *WandboxRunner) {
 	t.Helper()
 	f := &fakeWandbox{}
@@ -52,8 +50,7 @@ func newFake(t *testing.T, status int, body string, maxOutput int) (*fakeWandbox
 	return f, r
 }
 
-// wb собирает ответ в формате Wandbox — со всеми полями, как он отдаёт
-// на самом деле, включая те, что мы игнорируем.
+// wb собирает ответ в формате Wandbox со всеми его полями.
 func wb(status, compilerErr, out, progErr string) string {
 	b, _ := json.Marshal(map[string]string{
 		"status": status, "signal": "",
@@ -82,7 +79,6 @@ func TestRun_Success(t *testing.T) {
 		t.Fatalf("длительность не замерена: %v", res.Duration)
 	}
 
-	// Что ушло в сервис: заголовок и наш запрос в их формате.
 	_, got, ua := f.snapshot()
 	if ua != userAgent {
 		t.Fatalf("User-Agent %q — без него Wandbox отвечает 403", ua)
@@ -95,8 +91,6 @@ func TestRun_Success(t *testing.T) {
 }
 
 func TestRun_CompileErrorIsNotAnError(t *testing.T) {
-	// Ошибка компиляции — валидный результат с ненулевым кодом, а не error:
-	// иначе фронт не отличит «твой код не собрался» от «сервис лежит».
 	_, r := newFake(t, http.StatusOK, wb("1", "prog.cc:1:13: error: ...", "", ""), 0)
 
 	res, err := r.Run(context.Background(), Request{Language: LangCPP, Code: "oops"})
@@ -109,7 +103,6 @@ func TestRun_CompileErrorIsNotAnError(t *testing.T) {
 }
 
 func TestRun_PythonSyntaxErrorLandsInStderr(t *testing.T) {
-	// У Python нет этапа компиляции: SyntaxError приходит в program_error.
 	f, r := newFake(t, http.StatusOK, wb("1", "", "", "SyntaxError: invalid syntax\n"), 0)
 
 	res, err := r.Run(context.Background(), Request{Language: LangPython, Code: "def f(:"})
@@ -154,9 +147,7 @@ func TestRun_UnsupportedLanguageSkipsNetwork(t *testing.T) {
 }
 
 func TestRun_EmptyStatusMeansStopped(t *testing.T) {
-	// Так Wandbox отвечает на огромный вывод (проверено на живом сервисе):
-	// программу остановили, вывод есть, кода возврата нет. Это результат
-	// запуска, а не поломка сервиса — раньше ученик видел «сервис недоступен».
+	// Так Wandbox отвечает на огромный вывод.
 	_, r := newFake(t, http.StatusOK, wb("", "", "ж", ""), 0)
 
 	res, err := r.Run(context.Background(), Request{Language: LangPython, Code: "x"})
@@ -169,7 +160,6 @@ func TestRun_EmptyStatusMeansStopped(t *testing.T) {
 }
 
 func TestRun_BadStatusIsError(t *testing.T) {
-	// Молчаливый 0 показал бы ученику битый ответ как успешный запуск.
 	_, r := newFake(t, http.StatusOK, wb("abc", "", "42", ""), 0)
 
 	if _, err := r.Run(context.Background(), Request{Language: LangCPP, Code: "x"}); err == nil {
@@ -190,7 +180,6 @@ func TestRun_ContextCanceled(t *testing.T) {
 }
 
 func TestRun_TruncatesEachStreamSeparately(t *testing.T) {
-	// Программа залила вывод — но сообщение об ошибке не должно пропасть.
 	_, r := newFake(t, http.StatusOK, wb("1", "", strings.Repeat("x", 100), "boom"), 10)
 
 	res, err := r.Run(context.Background(), Request{Language: LangCPP, Code: "x"})
@@ -216,11 +205,9 @@ func TestTruncate(t *testing.T) {
 		{"влезает", "abc", 5, "abc", false},
 		{"ровно в лимит", "abcde", 5, "abcde", false},
 		{"длиннее", "abcdef", 5, "abcde", true},
-		// «ждём» — 8 байт, по 2 на букву. Лимит 5 попадает в середину «ё»:
-		// отступаем на границу и отдаём «жд», а не битый байт.
+		// «ждём» — по 2 байта на букву, лимит 5 приходится на середину «ё».
 		{"кириллица посреди буквы", "ждём", 5, "жд", true},
 		{"кириллица по границе", "ждём", 4, "жд", true},
-		// Эмодзи — 4 байта: лимит внутри него отбрасывает его целиком.
 		{"эмодзи", "a🙂b", 3, "a", true},
 	}
 	for _, tt := range tests {

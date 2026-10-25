@@ -1,11 +1,4 @@
-/* Тест ступени громкости (web/mic-gain-worklet.js).
- * Запуск: node test/micgain.mjs
- *
- * Проверяем три вещи, ради которых она и делалась:
- *   1. фон в паузах НЕ становится громче — иначе смысла в ней нет;
- *   2. речь становится заметно громче;
- *   3. хвост слова не обрубается — усиление спадает плавно, а не мгновенно.
- */
+// Тест web/mic-gain-worklet.js. Запуск: node test/micgain.mjs
 import { readFileSync } from 'fs';
 
 let failed = 0;
@@ -65,7 +58,7 @@ const sp = run(voice, 0.6);
 const spDb = 20 * Math.log10(sp.out / sp.in);
 ok(spDb > 6, `речь усилена на ${spDb.toFixed(1)} дБ`);
 
-// 3. Разница между речью и фоном выросла — ровно то, чего добивались
+// 3. Разница между речью и фоном выросла
 ok(spDb - bgDb > 10, `речь оторвалась от фона на ${(spDb - bgDb).toFixed(1)} дБ`);
 
 // 4. Хвост слова не обрубается: сразу после речи усиление ещё держится
@@ -77,7 +70,7 @@ ok(tail.out > settled.out * 1.5,
 // 5. Выключенная ступень пропускает сигнал как есть
 p.port.onmessage({ data: { enabled: false } });
 {
-    // 0.25 — точно представимо во float32, сравнение без допуска корректно
+    // 0.25 точно представимо во float32
     const input = new Float32Array(BLOCK).fill(0.25);
     const output = new Float32Array(BLOCK);
     p.process([[input]], [[output]]);

@@ -84,12 +84,8 @@ func (c *Client) send(msg []byte) {
 func (c *Client) write(ctx context.Context, cancel context.CancelFunc) {
 	defer cancel()
 
-	// write — отдельная горутина, и панику в ней net/http не ловит: без этого
-	// recover она роняет весь процесс со всеми комнатами. Перехватываем,
-	// пишем стек и выходим. Убирать за собой отдельно не нужно: defer cancel()
-	// выше выполнится после recover, read выйдет из Read, а его
-	// defer c.hub.Leave(c) освободит место в комнате — иначе полуживой клиент
-	// навсегда занял бы слот, и в комнату больше никто бы не вошёл.
+	// Паника в горутине роняет весь процесс — net/http её не ловит.
+	// После recover сработает cancel(), и read освободит слот через Leave.
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("паника в write, клиент отключён: %v\n%s", r, debug.Stack())
