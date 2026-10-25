@@ -73,3 +73,31 @@ func TestHealthz(t *testing.T) {
 		t.Fatalf("healthz: код %d, тело %q", rec.Code, rec.Body.String())
 	}
 }
+
+func TestRecoverer_PanicBecomes500(t *testing.T) {
+	h := recoverer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		var m map[string]int
+		m["boom"] = 1 // запись в nil-карту — настоящая паника рантайма
+	}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("паника должна превращаться в 500, получили %d", rec.Code)
+	}
+}
+
+func TestRecoverer_PassesThroughAbortHandler(t *testing.T) {
+	h := recoverer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+
+	defer func() {
+		if r := recover(); r != http.ErrAbortHandler {
+			t.Fatalf("ErrAbortHandler должен пробрасываться дальше, получили %v", r)
+		}
+	}()
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+	t.Fatal("сюда дойти не должны: ErrAbortHandler проглочен")
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"time"
 
 	"github.com/coder/websocket"
@@ -82,6 +83,18 @@ func (c *Client) send(msg []byte) {
 
 func (c *Client) write(ctx context.Context, cancel context.CancelFunc) {
 	defer cancel()
+
+	// write — отдельная горутина, и панику в ней net/http не ловит: без этого
+	// recover она роняет весь процесс со всеми комнатами. Перехватываем,
+	// пишем стек и выходим. Убирать за собой отдельно не нужно: defer cancel()
+	// выше выполнится после recover, read выйдет из Read, а его
+	// defer c.hub.Leave(c) освободит место в комнате — иначе полуживой клиент
+	// навсегда занял бы слот, и в комнату больше никто бы не вошёл.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("паника в write, клиент отключён: %v\n%s", r, debug.Stack())
+		}
+	}()
 
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()

@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"time"
 
 	"github.com/coder/websocket"
@@ -30,7 +31,35 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ws", s.handleWS)
 	mux.Handle("GET /", noCache(http.FileServer(http.FS(s.web))))
 
-	return mux
+	return recoverer(mux)
+}
+
+// recoverer превращает панику в хендлере в ответ 500 и внятную строку в логе.
+//
+// Процесс от такой паники net/http спасает и сам, но клиент тогда получает
+// оборванное соединение вместо ответа, а в логе — общая фраза без маршрута.
+// Панику в горутине, которую запустил хендлер, этот middleware не поймает:
+// она живёт в своём стеке, и защищать её надо изнутри (см. Client.write).
+func recoverer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			// ErrAbortHandler — штатный способ net/http намеренно оборвать
+			// ответ, а не ошибка. Отдаём обратно, как и ждёт стандартная
+			// библиотека: она обработает его молча.
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			log.Printf("паника в %s %s: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
+			// Для /ws соединение к этому моменту уже перехвачено, и net/http
+			// предупредит в логе, что писать в него поздно. Это ожидаемо.
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
