@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/fstest"
 
 	"github.com/thereayou44/OTORoom.git/internal/config"
 	"github.com/thereayou44/OTORoom.git/internal/signal"
@@ -12,7 +13,8 @@ import (
 
 func do(t *testing.T, cfg config.Config, path string) *httptest.ResponseRecorder {
 	t.Helper()
-	s := New(cfg, signal.NewHub())
+	// Статика этим тестам не нужна — пустой ФС в памяти хватает.
+	s := New(cfg, signal.NewHub(), fstest.MapFS{})
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 	return rec
@@ -67,7 +69,7 @@ func TestICE_WithTURN(t *testing.T) {
 
 func TestHealthz(t *testing.T) {
 	rec := do(t, config.Config{}, "/healthz")
-	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+	if rec.Code != http.StatusOK || rec.Body.String() != "OK" {
 		t.Fatalf("healthz: код %d, тело %q", rec.Code, rec.Body.String())
 	}
 }
