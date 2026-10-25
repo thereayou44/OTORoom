@@ -35,11 +35,9 @@ export interface BoardOptions {
   awareness: Awareness;
   container: HTMLElement;
   key?: string;
-  /** Доска сама переключила инструмент (например, после вставки картинки) —
-      чтобы панель инструментов снаружи подсветила правильную кнопку. */
+  /** Доска сама сменила инструмент (после вставки картинки). */
   onToolChange?: (tool: Tool) => void;
-  /** Сменилась страница или их количество — в том числе когда листает
-      собеседник. Панели снаружи нужно обновить счётчик. */
+  /** Сменилась страница или их число — в том числе у собеседника. */
   onPagesChange?: (page: number, total: number) => void;
 }
 
@@ -55,18 +53,14 @@ interface ShapeData {
   w?: number; h?: number;
 }
 
-/** Не раздуваем общий документ: он живёт в памяти и целиком передаётся
-    при каждом переподключении. */
+// Документ целиком уходит при каждом переподключении — не раздуваем.
 const IMG_MAX_BYTES = 900 * 1024;
 const IMG_MAX_SIDE = 1280;
 
 export function createBoard(opts: BoardOptions): BoardHandle {
   const { doc, awareness, container } = opts;
 
-  /* Страницы. Каждая — свой Y.Array фигур (`board:0`, `board:1`, …), а
-     сколько их всего и какую сейчас смотрим — в общей карте. Номер страницы
-     общий на двоих: на занятии «открой вторую» должно работать буквально,
-     без просьбы пролистать самому. */
+  // Каждая страница — свой Y.Array; номер текущей общий на двоих.
   const prefix = opts.key ?? 'board';
   const meta = doc.getMap<number>(prefix + '-meta');
 
@@ -142,7 +136,6 @@ export function createBoard(opts: BoardOptions): BoardHandle {
       drawShape(item.toJSON() as unknown as ShapeData, item);
     }
 
-    // Рамка вокруг выбранной фигуры — видно, что именно потащится.
     if (selected && tool === 'move' && shapes.toArray().indexOf(selected) >= 0) {
       const [bx, by, bw, bh] = bbox(selected.toJSON() as unknown as ShapeData);
       const pad = 6;
@@ -157,8 +150,7 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     ctx.restore();
   }
 
-  // Декодированные картинки. Ключ — сама Y.Map фигуры: она стабильна
-  // между перерисовками, а при удалении фигуры запись отпадёт сама.
+  // Ключ — Y.Map фигуры: при её удалении запись отпадёт сама.
   const bitmaps = new WeakMap<Y.Map<unknown>, ImageBitmap | 'pending' | 'error'>();
 
   function drawImage(s: ShapeData, item: Y.Map<unknown>) {
@@ -175,7 +167,7 @@ export function createBoard(opts: BoardOptions): BoardHandle {
         .then((b) => { bitmaps.set(item, b); render(); })
         .catch(() => { bitmaps.set(item, 'error'); });
     }
-    // Пока декодируется (или если байты битые) — пунктирная рамка-заглушка.
+    // Пока декодируется — пунктирная заглушка.
     ctx.save();
     ctx.strokeStyle = 'rgba(122,167,224,.5)';
     ctx.lineWidth = 1;
@@ -345,8 +337,6 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     textInput = null;
   }
 
-  /** Текст набирается прямо на доске, а не в системном prompt: видно, где
-      он появится, и каким шрифтом. */
   function openTextInput(x: number, y: number) {
     closeTextInput();
     const size = Math.max(14, width * 7);
@@ -376,7 +366,7 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
     ta.addEventListener('input', grow);
 
-    let done = false;   // commit зовётся и по Enter, и по blur — второй раз молчим
+    let done = false;   // commit зовут и Enter, и blur
     const commit = () => {
       if (done) return;
       done = true;
@@ -522,8 +512,7 @@ export function createBoard(opts: BoardOptions): BoardHandle {
 
   // ---------- вставка картинок ----------
 
-  /** Перекодирует картинку в JPEG не длиннее maxSide по большой стороне.
-      JPEG не умеет прозрачность, поэтому подкладываем белый фон. */
+  // JPEG не умеет прозрачность — подкладываем белый фон.
   async function encodeJpeg(bmp: ImageBitmap, maxSide: number, quality: number): Promise<Uint8Array | null> {
     const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
     const w = Math.max(1, Math.round(bmp.width * k));
@@ -544,13 +533,13 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     if (!bmp) return null;
 
     let bytes = await encodeJpeg(bmp, IMG_MAX_SIDE, 0.82);
-    // Слишком тяжёлая (фотография с деталями) — пробуем жёстче.
+    // Не влезло — жмём сильнее.
     if (bytes && bytes.byteLength > IMG_MAX_BYTES) bytes = await encodeJpeg(bmp, 900, 0.7);
     const aspect = bmp.width / bmp.height;
     bmp.close();
     if (!bytes || bytes.byteLength > IMG_MAX_BYTES) return null;
 
-    // Вписываем в 60% холста; лёгкий сдвиг, чтобы вставки подряд не легли стопкой.
+    // Сдвиг — чтобы вставки подряд не легли стопкой.
     let w = BOARD_W * 0.6, h = w / aspect;
     if (h > BOARD_H * 0.6) { h = BOARD_H * 0.6; w = h * aspect; }
     const jitter = () => (Math.random() - 0.5) * 60;
@@ -569,7 +558,7 @@ export function createBoard(opts: BoardOptions): BoardHandle {
   async function onPaste(e: ClipboardEvent) {
     // Панель доски скрыта — вставка не наша.
     if (container.offsetParent === null) return;
-    // Пользователь вставляет в текстовое поле (чат, редактор) — не перехватываем.
+    // Вставка в текстовое поле — не наша.
     const t = e.target as HTMLElement | null;
     if (t && t.closest && t.closest('input, textarea, [contenteditable]')) return;
 
@@ -583,7 +572,7 @@ export function createBoard(opts: BoardOptions): BoardHandle {
 
     shapes.push([shape]);
 
-    // Сразу даём её двигать: вставил — тащи, а не рисуй поверх.
+    // Вставил — сразу тащи.
     tool = 'move';
     selected = shape;
     canvas.style.cursor = 'move';
@@ -603,9 +592,7 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     opts.onPagesChange?.(page, pageCount());
   }
 
-  /* Пересаживаемся на другую страницу: у каждой свой массив фигур, а значит
-     и свой наблюдатель, и своя история отмены — чужую страницу отменять
-     нельзя. */
+  // У каждой страницы своя история отмены — чужую не откатываем.
   function bindPage(i: number) {
     const target = Math.max(0, Math.min(pageCount() - 1, i));
     if (target === page) { notifyPages(); return; }
@@ -618,7 +605,6 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     undoManager = new Y.UndoManager(shapes);
     shapes.observeDeep(observer);
 
-    // Всё, что относилось к прошлой странице, больше не действительно
     selected = null;
     moveState = null;
     drawing = false;
@@ -629,8 +615,6 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     notifyPages();
   }
 
-  /* Номер страницы и их количество едут через общую карту, поэтому
-     собеседник листает вместе с нами — и наоборот. */
   const metaObserver = () => {
     const want = Number(meta.get('current')) || 0;
     if (want !== page) bindPage(want);
@@ -641,9 +625,7 @@ export function createBoard(opts: BoardOptions): BoardHandle {
   let destroyed = false;
 
   fit();
-  /* Наблюдатель срабатывает только на изменения. Если доску открыли, когда
-     собеседник уже перелистнул, изменений больше не будет — и мы остались
-     бы на первой странице. Поэтому текущую страницу читаем сразу. */
+  // Наблюдатель видит только изменения — текущую страницу читаем сразу.
   metaObserver();
 
   return {
@@ -678,9 +660,7 @@ export function createBoard(opts: BoardOptions): BoardHandle {
     undo() { undoManager.undo(); },
     redo() { undoManager.redo(); },
     destroy() {
-      // Повторный вызов безопасен: collab.destroy() тоже уничтожает доску,
-      // и второй unobserve засыпал бы консоль предупреждениями Yjs.
-      if (destroyed) return;
+      if (destroyed) return; // collab.destroy() тоже уничтожает доску
       destroyed = true;
       closeTextInput();
       document.removeEventListener('paste', onPaste);

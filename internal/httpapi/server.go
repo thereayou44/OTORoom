@@ -19,10 +19,8 @@ type Server struct {
 	cfg config.Config
 	web fs.FS
 
-	// Интерфейс, а не *runner.WandboxRunner: замена Wandbox на Docker —
-	// это одна строка в main.go, сюда она не дойдёт.
 	runner   runner.Runner
-	runSlots chan struct{} // семафор одновременных запусков, см. run.go
+	runSlots chan struct{} // семафор одновременных запусков
 }
 
 func New(cfg config.Config, hub *signal.Hub, web fs.FS, run runner.Runner) *Server {
@@ -47,12 +45,8 @@ func (s *Server) Handler() http.Handler {
 	return recoverer(mux)
 }
 
-// recoverer превращает панику в хендлере в ответ 500 и внятную строку в логе.
-//
-// Процесс от такой паники net/http спасает и сам, но клиент тогда получает
-// оборванное соединение вместо ответа, а в логе — общая фраза без маршрута.
-// Панику в горутине, которую запустил хендлер, этот middleware не поймает:
-// она живёт в своём стеке, и защищать её надо изнутри (см. Client.write).
+// recoverer отдаёт 500 вместо оборванного соединения. Паники в горутинах,
+// запущенных хендлером, он не ловит — их надо ловить внутри (Client.write).
 func recoverer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -60,15 +54,11 @@ func recoverer(next http.Handler) http.Handler {
 			if rec == nil {
 				return
 			}
-			// ErrAbortHandler — штатный способ net/http намеренно оборвать
-			// ответ, а не ошибка. Отдаём обратно, как и ждёт стандартная
-			// библиотека: она обработает его молча.
+			// Штатный способ net/http оборвать ответ — не ошибка, отдаём обратно.
 			if rec == http.ErrAbortHandler {
 				panic(rec)
 			}
 			log.Printf("паника в %s %s: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
-			// Для /ws соединение к этому моменту уже перехвачено, и net/http
-			// предупредит в логе, что писать в него поздно. Это ожидаемо.
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}()
 		next.ServeHTTP(w, r)

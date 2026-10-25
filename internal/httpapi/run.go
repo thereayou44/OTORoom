@@ -12,44 +12,24 @@ import (
 	"github.com/thereayou44/OTORoom.git/internal/runner"
 )
 
-// POST /api/run — запуск кода из редактора.
-//
-// Контракт с фронтом (web/app.js, runCode):
-//
-//	запрос: {"language": "cpp"|"python", "source": "...", "stdin": "..."}
-//	200:    {"stdout", "stderr", "exitCode", "durationMs", "truncated"}
-//	ошибка: любой не-200 с телом {"error": "текст для человека"}
-//
-// Главное правило: 200 означает «запуск состоялся» — даже если код не
-// скомпилировался (тогда текст компилятора в stderr, exitCode ненулевой).
-// exitCode -1 (runner.ExitStopped) — программу остановили до завершения,
-// например за слишком большой вывод; вывод тогда неполный.
-// Не-200 означает «запустить не смогли». Так фронт отличает «твой код
-// плохой» от «у нас проблемы».
-//
-// Здесь вся политика доступа — лимиты, таймаут, число запусков. Раннер про
-// неё не знает: он только исполняет.
+// POST /api/run. 200 — запуск состоялся (даже если код не скомпилировался:
+// тогда текст в stderr и exitCode != 0). Не-200 — запустить не смогли,
+// тело {"error": "..."} фронт показывает ученику как есть.
 
 const (
-	maxRunBody = 128 << 10 // всё тело запроса, режется до разбора JSON
+	maxRunBody = 128 << 10
 	maxSource  = 64 << 10
 	maxStdin   = 16 << 10
 
 	runTimeout = 15 * time.Second
 
-	// Общий лимит на сервер, а не на комнату: в запросе нет номера комнаты,
-	// а двойной клик фронт и так не пускает. Нужен он, чтобы не устроить
-	// нагрузку бесплатному публичному Wandbox — забанить могут весь адрес
-	// Render, и тогда запуск сломается у всех.
+	// Общий на сервер: не нагружать бесплатный Wandbox, иначе забанят адрес.
 	maxParallelRuns = 4
 )
 
-// Формат провода. Отдельно от runner.Request намеренно: снаружи camelCase и
-// длительность в миллисекундах, внутри — гошные имена и time.Duration.
-// Повесь теги на доменный тип — и он начнёт зависеть от формата нашего API.
 type runRequest struct {
 	Language string `json:"language"`
-	Source   string `json:"source"` // в runner.Request это поле Code
+	Source   string `json:"source"`
 	Stdin    string `json:"stdin"`
 }
 
@@ -61,8 +41,6 @@ type runResponse struct {
 	Truncated  bool   `json:"truncated"`
 }
 
-// Тексты ниже фронт показывает ученику дословно — поэтому по-русски и
-// по-человечески.
 const (
 	msgBadRequest  = "не удалось разобрать запрос"
 	msgBadLanguage = "неизвестный язык"
@@ -75,8 +53,6 @@ const (
 )
 
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
-	// Лимит на тело — до разбора: иначе злой клиент заставит читать в
-	// память сколько угодно.
 	r.Body = http.MaxBytesReader(w, r.Body, maxRunBody)
 
 	var req runRequest
@@ -106,8 +82,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Неблокирующая попытка занять место. В очередь не ставим: держать
-	// запрос висящим ради чужого запуска хуже, чем честно отказать сразу.
+	// Без очереди: лучше сразу отказать, чем держать запрос висящим.
 	select {
 	case s.runSlots <- struct{}{}:
 		defer func() { <-s.runSlots }()
@@ -116,8 +91,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// r.Context(), а не Background: ученик закрыл вкладку — запрос к
-	// Wandbox оборвётся сам, место в семафоре освободится.
+	// От r.Context(): закрыли вкладку — запрос к Wandbox оборвётся.
 	ctx, cancel := context.WithTimeout(r.Context(), runTimeout)
 	defer cancel()
 
@@ -129,18 +103,13 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, runner.ErrUnsupportedLanguage):
-			// После проверки выше сюда не дойдёт, но реализация раннера
-			// может поддерживать меньше языков, чем ручка.
 			runError(w, http.StatusBadRequest, msgBadLanguage)
 		case errors.Is(err, context.DeadlineExceeded):
 			runError(w, http.StatusGatewayTimeout, msgTimeout)
 		case errors.Is(err, context.Canceled):
-			// Клиент ушёл — отвечать некому.
+			// клиент ушёл — отвечать некому
 		default:
-			// Настоящую причину — только в лог. Наружу не должны утекать
-			// адреса и внутренние детали, да и ученику ни к чему видеть
-			// «dial tcp: lookup wandbox.org».
-			log.Println("запуск кода не удался:", err)
+			log.Println("запуск кода не удался:", err) // наружу детали не отдаём
 			runError(w, http.StatusBadGateway, msgUnavailable)
 		}
 		return

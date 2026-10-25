@@ -18,14 +18,11 @@ import (
 	"github.com/thereayou44/OTORoom.git/internal/signal"
 )
 
-// fakeRunner реализует runner.Runner без сети. Ради этого интерфейс и
-// заводился: ручка тестируется, ни разу не обратившись к Wandbox.
 type fakeRunner struct {
 	res runner.Response
 	err error
 
-	// Если не nil — Run ждёт, пока канал не закроют (или не истечёт ctx).
-	// Нужно, чтобы занять все места в семафоре.
+	// Если не nil, Run висит до закрытия канала — так занимаем семафор.
 	block chan struct{}
 
 	mu          sync.Mutex
@@ -96,7 +93,6 @@ func TestRun_SuccessMapsFields(t *testing.T) {
 		t.Fatalf("ответ %+v, ждали %+v", got, want)
 	}
 
-	// Что дошло до раннера: source с провода стал Code в доменном типе.
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	wantReq := runner.Request{Language: runner.LangCPP, Code: "int main(){}", Stdin: "21\n"}
@@ -156,7 +152,6 @@ func TestRun_Errors(t *testing.T) {
 			if body.Error != tt.wantMsg {
 				t.Fatalf("текст %q, ждали %q", body.Error, tt.wantMsg)
 			}
-			// Внутренние подробности не должны доезжать до ученика.
 			if strings.Contains(raw, "секретная") || strings.Contains(raw, "dial tcp") {
 				t.Fatalf("в ответ утекла внутренняя ошибка: %s", raw)
 			}
@@ -169,9 +164,7 @@ func TestRun_Errors(t *testing.T) {
 }
 
 func TestRun_GetDoesNotRunCode(t *testing.T) {
-	// GET сюда не попадает: его забирает общий маршрут "GET /" (раздача
-	// статики) и отвечает 404. Код ли статуса не важен — важно, что
-	// запуск кода по GET невозможен.
+	// GET забирает раздача статики ("GET /") — важно лишь, что код не запустился.
 	f := &fakeRunner{}
 	rec := httptest.NewRecorder()
 	newRunServer(f).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/run", nil))
@@ -189,7 +182,6 @@ func TestRun_LimitsParallelRuns(t *testing.T) {
 	h := newRunServer(f)
 	const body = `{"language":"cpp","source":"x"}`
 
-	// Занимаем все места: эти запросы висят внутри раннера.
 	var wg sync.WaitGroup
 	codes := make(chan int, maxParallelRuns)
 	for range maxParallelRuns {
@@ -200,7 +192,6 @@ func TestRun_LimitsParallelRuns(t *testing.T) {
 		}()
 	}
 
-	// Ждём, пока все дойдут до раннера.
 	deadline := time.Now().Add(5 * time.Second)
 	for f.callCount() < maxParallelRuns {
 		if time.Now().After(deadline) {
@@ -209,12 +200,10 @@ func TestRun_LimitsParallelRuns(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	// Следующий получает отказ сразу, а не встаёт в очередь.
 	if rec := postRun(t, h, body); rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("при занятых местах ждали 429, получили %d", rec.Code)
 	}
 
-	// Отпускаем — все занятые завершаются успешно...
 	close(f.block)
 	wg.Wait()
 	close(codes)
@@ -224,7 +213,6 @@ func TestRun_LimitsParallelRuns(t *testing.T) {
 		}
 	}
 
-	// ...и места освобождаются: новый запуск снова проходит.
 	if rec := postRun(t, h, body); rec.Code != http.StatusOK {
 		t.Fatalf("после освобождения ждали 200, получили %d", rec.Code)
 	}
