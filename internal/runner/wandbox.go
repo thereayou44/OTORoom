@@ -24,8 +24,8 @@ const (
 
 	maxResponseBody = 2 << 20
 
-	// Больше таймаута ручки (15 с), чтобы первым срабатывал контекст.
-	httpTimeout = 20 * time.Second
+	// Больше таймаута ручки (30 с), чтобы первым срабатывал контекст.
+	httpTimeout = 35 * time.Second
 )
 
 type compilerSpec struct {

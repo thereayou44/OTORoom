@@ -44,7 +44,7 @@
         </div>
 
         <div class="tile" id="tileEditor" hidden>
-            <div class="pane">
+            <div class="pane pane--editor">
                 <div class="pane__bar">
                     <span class="pane__title">Редактор</span>
                     <select class="pane__select" id="editorLang" aria-label="Язык">
@@ -56,26 +56,24 @@
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4l12 8-12 8z"/></svg>
                         <span id="runBtnLabel">Запустить</span>
                     </button>
-                    <button class="tool" id="runStdinBtn" aria-pressed="false" title="Ввод для программы">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h7"/></svg>
-                    </button>
 
                     <button class="pane__close" id="editorClose" aria-label="Закрыть">×</button>
                 </div>
                 <div class="pane__body" id="editorHost"></div>
 
-                <div class="runio" id="runStdin" hidden>
-                    <label class="runio__label" for="runStdinText">Ввод программы (stdin)</label>
-                    <textarea id="runStdinText" rows="2" spellcheck="false" placeholder="то, что программа прочитает со входа"></textarea>
-                </div>
-
-                <div class="runout" id="runOut" hidden>
-                    <div class="runout__head">
-                        <span class="runout__title" id="runOutTitle">Вывод</span>
-                        <span class="runout__meta" id="runOutMeta"></span>
-                        <button class="pane__close" id="runOutClose" aria-label="Скрыть вывод">×</button>
+                <div class="runpanel">
+                    <div class="runcol">
+                        <label class="runcol__head" for="runStdinText">Ввод</label>
+                        <textarea class="runcol__body" id="runStdinText" spellcheck="false"
+                                  placeholder="то, что прочитают cin или input()"></textarea>
                     </div>
-                    <pre class="runout__body" id="runOutBody"></pre>
+                    <div class="runcol">
+                        <div class="runcol__head">
+                            <span class="runout__title" id="runOutTitle">Вывод</span>
+                            <span class="runout__meta" id="runOutMeta"></span>
+                        </div>
+                        <pre class="runcol__body runout__body" id="runOutBody"></pre>
+                    </div>
                 </div>
             </div>
         </div>
