@@ -487,6 +487,7 @@
         });
 
         collab.doc.getMap('run').observe(renderRun);
+        collab.bindTextarea(el.runStdinText, 'stdin');
 
         ch.addEventListener('open', () => trace('канал совместной работы открыт', 'ok'));
     }
