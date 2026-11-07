@@ -25,9 +25,8 @@
         editorHost: $('editorHost'), boardHost: $('boardHost'),
         editorLang: $('editorLang'), editorClose: $('editorClose'),
         runBtn: $('runBtn'), runBtnLabel: $('runBtnLabel'),
-        runStdinBtn: $('runStdinBtn'), runStdin: $('runStdin'), runStdinText: $('runStdinText'),
-        runOut: $('runOut'), runOutTitle: $('runOutTitle'),
-        runOutMeta: $('runOutMeta'), runOutBody: $('runOutBody'), runOutClose: $('runOutClose'),
+        runStdinText: $('runStdinText'), runOutTitle: $('runOutTitle'),
+        runOutMeta: $('runOutMeta'), runOutBody: $('runOutBody'),
         boardClose: $('boardClose'), boardTools: $('boardTools'),
         boardColors: $('boardColors'), boardWidth: $('boardWidth'),
         boardUndo: $('boardUndo'), boardRedo: $('boardRedo'), boardClear: $('boardClear'),
@@ -287,14 +286,6 @@
     });
 
     el.runBtn.addEventListener('click', runCode);
-    el.runOutClose.addEventListener('click', () => { el.runOut.hidden = true; });
-
-    el.runStdinBtn.addEventListener('click', () => {
-        const open = el.runStdin.hidden;
-        el.runStdin.hidden = !open;
-        el.runStdinBtn.setAttribute('aria-pressed', String(open));
-        if (open) el.runStdinText.focus();
-    });
 
     // Ctrl+Enter прямо из редактора — не тянуться мышкой к кнопке.
     el.tileEditor.addEventListener('keydown', (e) => {
@@ -545,7 +536,6 @@
         if (!m || !m.get('status')) return;
 
         const status = m.get('status');
-        el.runOut.hidden = false;
 
         if (status === 'running') {
             el.runOutTitle.textContent = m.get('by') === clientTag ? 'Выполняется…' : 'Собеседник запускает…';
@@ -571,7 +561,11 @@
         el.runOutTitle.dataset.state = code === 0 ? 'ok' : 'fail';
 
         const bits = [];
-        if (m.get('durationMs') != null) bits.push(`${m.get('durationMs')} мс`);
+        // У C++ почти всё время — компиляция: bits/stdc++.h собирается ~10 с.
+        const ms = m.get('durationMs');
+        if (ms != null) {
+            bits.push(formatDuration(ms) + (m.get('language') === 'cpp' ? ' вместе с компиляцией' : ''));
+        }
         if (m.get('truncated')) bits.push('вывод обрезан');
         el.runOutMeta.textContent = bits.join(' · ');
 
@@ -590,6 +584,10 @@
             i.textContent = 'программа ничего не вывела';
             el.runOutBody.append(i);
         }
+    }
+
+    function formatDuration(ms) {
+        return ms < 1000 ? `${ms} мс` : `${(ms / 1000).toFixed(1).replace('.', ',')} с`;
     }
 
     function setRunBusy(on) {
@@ -636,6 +634,7 @@
                     exitCode: Number(res.exitCode) || 0,
                     durationMs: Number(res.durationMs) || 0,
                     truncated: !!res.truncated,
+                    language: el.editorLang.value,
                     by: clientTag,
                 });
                 trace(`код выполнен, возврат ${Number(res.exitCode) || 0}`,
