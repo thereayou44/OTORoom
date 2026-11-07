@@ -65,6 +65,22 @@
     // Чтобы отличать «я запускаю» от «собеседник запускает» в общем документе.
     const clientTag = Math.random().toString(36).slice(2, 10);
 
+    // Переживает F5, у другой вкладки свой. По нему сервер отдаёт вернувшейся
+    // вкладке место её «призрака» вместо room-full (см. Hub.Join).
+    const tabSession = (() => {
+        const make = () => (crypto.randomUUID ? crypto.randomUUID()
+            : Array.from(crypto.getRandomValues(new Uint8Array(16)),
+                (b) => b.toString(16).padStart(2, '0')).join(''));
+        try {
+            let id = sessionStorage.getItem('oto.session');
+            if (!id) { id = make(); sessionStorage.setItem('oto.session', id); }
+            return id;
+        } catch {
+            // Приватный режим: F5 не переживём, смену сети — переживём.
+            return make();
+        }
+    })();
+
     /* ---------- демонстрация экрана ---------- */
 
     /* Что сейчас уходит в эфир по видео: экран важнее камеры. */
@@ -481,14 +497,22 @@
     function wireCollab(ch) {
         if (!window.OTO) { trace('модуль совместной работы не загрузился', 'err'); return; }
 
+        ch.addEventListener('open', () => trace('канал совместной работы открыт', 'ok'));
+
+        // Собеседник переподключился — тот же документ к новому каналу.
+        if (collab) {
+            collab.attach(ch);
+            trace('документ подключён к новому каналу — содержимое сохранено', 'ok');
+            return;
+        }
+
         collab = window.OTO.createCollab(ch, {
             name: initiator ? 'Инициатор' : 'Участник',
             color: initiator ? '#6fc3f7' : '#f2b24c',
         });
 
+        // Подписка одна на весь срок жизни документа.
         collab.doc.getMap('run').observe(renderRun);
-
-        ch.addEventListener('open', () => trace('канал совместной работы открыт', 'ok'));
     }
 
     /* ---------- запуск кода ----------
@@ -566,13 +590,6 @@
         return ms < 1000 ? `${ms} мс` : `${(ms / 1000).toFixed(1).replace('.', ',')} с`;
     }
 
-    function clearRunOutput() {
-        el.runOutTitle.textContent = 'Вывод';
-        el.runOutTitle.dataset.state = '';
-        el.runOutMeta.textContent = '';
-        el.runOutBody.textContent = '';
-    }
-
     function setRunBusy(on) {
         runBusy = on;
         el.runBtn.disabled = on;
@@ -640,6 +657,7 @@
 
         if (pane === which) which = null;
         pane = which;
+        showWaiting(waitingOn);
 
         el.tileEditor.hidden = which !== 'editor';
         el.tileBoard.hidden = which !== 'board';
@@ -1129,7 +1147,12 @@
         ws.addEventListener('open', () => {
             retry = 0;
             trace('вебсокет открыт');
-            send('join', { room: roomId });
+            // resume: соединение живо — это смена сети, а не F5.
+            send('join', {
+                room: roomId,
+                session: tabSession,
+                resume: !!pc && pc.connectionState !== 'closed',
+            });
             startWsKeepalive();
         });
 
@@ -1174,6 +1197,15 @@
     async function handle(msg) {
         switch (msg.type) {
             case 'joined': {
+                // Сменилась сеть, соединение живо: сервер тихо подменил сокет —
+                // роль прежняя, только перезапускаем ICE.
+                if (msg.resumed && pc && pc.connectionState !== 'closed') {
+                    trace('вернулись после смены сети — прокладываем маршрут заново', 'ok');
+                    peerPresent = true;
+                    showWaiting(false);
+                    tryRecover('сеть сменилась', true);
+                    break;
+                }
                 // Посреди живого звонка роль не меняем: от неё зависит
                 // isPolite, разъедутся — переговоры сломаются.
                 if (callAlive()) {
@@ -1262,6 +1294,9 @@
             case 'bye':
                 trace('второй участник вышел', 'warn');
                 peerPresent = false;
+                // Остались одни — значит теперь «первые»; инициатором сервер
+                // сделает следующего. Иначе после возврата инициаторов будет два.
+                initiator = false;
                 teardownPeer();
                 showWaiting(true);
                 setRoute('none', 'ждём второго');
@@ -1462,11 +1497,12 @@
         }, DISCONNECT_GRACE);
     }
 
-    // Перезапуск ICE — новый маршрут без разрыва звонка.
-    function tryRecover(why) {
+    // Перезапуск ICE — новый маршрут без разрыва звонка. force — мимо кулдауна:
+    // после смены сети прошлая попытка могла уйти в мёртвый сокет.
+    function tryRecover(why, force = false) {
         if (!pc || leaving) return;
         const now = Date.now();
-        if (now - lastRecover < RECOVER_COOLDOWN) return;
+        if (!force && now - lastRecover < RECOVER_COOLDOWN) return;
         lastRecover = now;
         cancelRecovery();
 
@@ -1511,17 +1547,10 @@
         meta = null;
         chat = null;
         imgRx = {};
-        // Совместная работа живёт на data channel этого соединения — умирает с ним.
-        if (collab) { collab.destroy(); collab = null; }
-        editor = null;
-        board = null;
-        pane = null;
+        // Документ переживает соединение: к новому каналу его подключит
+        // wireCollab, уничтожается он только в leave().
+        if (collab) collab.detach();
         setRunBusy(false);
-        clearRunOutput();
-        el.tileEditor.hidden = true;
-        el.tileBoard.hidden = true;
-        setMenuItem(el.miEditor, false);
-        setMenuItem(el.miBoard, false);
         applyLayout();
         vizAnalyser = null;
         stopViz();
@@ -1613,7 +1642,12 @@
 
     function stopClock() { clearInterval(clockTimer); clockTimer = 0; }
 
-    function showWaiting(on) { el.waiting.hidden = !on; }
+    // Открытую панель заставкой не закрываем — работа продолжается.
+    let waitingOn = true;
+    function showWaiting(on) {
+        waitingOn = on;
+        el.waiting.hidden = !on || !!pane;
+    }
 
     /* ---------- управление ---------- */
 
@@ -1639,12 +1673,28 @@
         leaving = true;
         send('bye');
         teardownPeer();
+        if (collab) { collab.destroy(); collab = null; }
         stopBoost();
         if (screenStream) screenStream.getTracks().forEach((t) => t.stop());
         if (localStream) localStream.getTracks().forEach((t) => t.stop());
         if (ws) ws.close();
         location.href = 'index.html?room=' + encodeURIComponent(roomId);
     }
+
+    // После смены сети старый TCP почти наверняка мёртв — переоткрываем сразу,
+    // не дожидаясь паузы. navigator.connection не берём: его 'change'
+    // срабатывает и на колебания оценки скорости.
+    window.addEventListener('online', () => {
+        if (leaving) return;
+        trace('сеть вернулась — переподключаем сигналинг', 'warn');
+        retry = 0;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.close();             // переподключит close-обработчик
+        } else if (!ws || ws.readyState === WebSocket.CLOSED) {
+            clearTimeout(retryTimer);
+            connect();
+        }
+    });
 
     window.addEventListener('pagehide', () => {
         if (!leaving) { leaving = true; send('bye'); }

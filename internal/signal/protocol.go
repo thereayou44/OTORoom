@@ -18,14 +18,20 @@ const (
 )
 
 type Message struct {
-	Type        string          `json:"type"`
-	IsInitiator bool            `json:"initiator,omitempty"`
-	Message     string          `json:"message"`
-	Payload     json.RawMessage `json:"payload"`
+	Type        string `json:"type"`
+	IsInitiator bool   `json:"initiator,omitempty"`
+	// В joined: старое соединение этой же вкладки заменено новым.
+	Resumed bool            `json:"resumed,omitempty"`
+	Message string          `json:"message"`
+	Payload json.RawMessage `json:"payload"`
 }
 
 type joinPayload struct {
 	Room string `json:"room"`
+	// Идентификатор вкладки; пустой — без возобновления (старый фронт).
+	Session string `json:"session"`
+	// Соединение у вкладки живо: смена сети, а не F5.
+	Resume bool `json:"resume"`
 }
 
 func errorCode(err error) string {

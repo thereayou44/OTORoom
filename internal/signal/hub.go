@@ -26,6 +26,9 @@ func NewHub() *Hub {
 
 var roomNameRe = regexp.MustCompile(`^[a-z0-9-]{2,32}$`)
 
+// Непохожее на UUID считаем отсутствием сессии.
+var sessionRe = regexp.MustCompile(`^[A-Za-z0-9-]{8,64}$`)
+
 func (r *room) join(client *Client) bool {
 	for i, c := range r.clients {
 		if c == nil {
@@ -36,12 +39,44 @@ func (r *room) join(client *Client) bool {
 	return false
 }
 
-func (r *room) leave(client *Client) {
+func (r *room) leave(client *Client) bool {
 	for i, c := range r.clients {
 		if c == client {
 			r.clients[i] = nil
+			return true
 		}
 	}
+	return false
+}
+
+func (r *room) replace(old, client *Client) {
+	for i, c := range r.clients {
+		if c == old {
+			r.clients[i] = client
+			return
+		}
+	}
+}
+
+func (r *room) has(client *Client) bool {
+	for _, c := range r.clients {
+		if c == client {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *room) bySession(session string) *Client {
+	if session == "" {
+		return nil
+	}
+	for _, c := range r.clients {
+		if c != nil && c.session == session {
+			return c
+		}
+	}
+	return nil
 }
 
 func (r *room) count() int {
@@ -67,9 +102,16 @@ func (r *room) others(except *Client) []*Client {
 	return clients
 }
 
-func (h *Hub) Join(name string, client *Client) (initiator bool, err error) {
+// Если в комнате уже сидит та же вкладка (session), это не третий участник:
+// её старый сокет ещё не признан мёртвым (пинг заметит через ~35 с). Отдаём
+// место новому соединению: при resume — тихо, иначе (F5) собеседник получает
+// peer-left + peer-joined и пересобирает соединение.
+func (h *Hub) Join(name string, client *Client, session string, resume bool) (initiator, resumed bool, err error) {
 	if !roomNameRe.MatchString(name) {
-		return false, ErrBadRoom
+		return false, false, ErrBadRoom
+	}
+	if !sessionRe.MatchString(session) {
+		session = ""
 	}
 
 	h.mu.Lock()
@@ -80,24 +122,44 @@ func (h *Hub) Join(name string, client *Client) (initiator bool, err error) {
 		h.rooms[name] = r
 	}
 
-	if r.count() >= 2 {
-		h.mu.Unlock()
-		return false, ErrRoomFull
+	stale := r.bySession(session)
+	silent := stale != nil && resume
+
+	switch {
+	case silent:
+		r.replace(stale, client)
+	case stale != nil:
+		r.leave(stale)
+		fallthrough
+	default:
+		if r.count() >= 2 {
+			h.mu.Unlock()
+			return false, false, ErrRoomFull
+		}
+		r.join(client)
 	}
 
-	initiator = r.count() > 0
-
-	r.join(client)
+	initiator = len(r.others(client)) > 0
 	client.room = name
+	client.session = session
 
 	peers := r.others(client)
 	h.mu.Unlock()
 
+	if stale != nil {
+		stale.kick()
+	}
+	if silent {
+		return initiator, true, nil
+	}
 	for _, p := range peers {
+		if stale != nil {
+			p.sendMsg(Message{Type: TypePeerLeft})
+		}
 		p.sendMsg(Message{Type: TypePeerJoined})
 	}
 
-	return initiator, nil
+	return initiator, stale != nil, nil
 }
 
 func (h *Hub) Leave(client *Client) {
@@ -111,8 +173,14 @@ func (h *Hub) Leave(client *Client) {
 		return
 	}
 
-	r.leave(client)
+	// Заменённый вкладкой клиент (см. Join) уходит молча, иначе peer-left
+	// сломал бы собеседнику свежий звонок.
+	removed := r.leave(client)
 	client.room = ""
+	if !removed {
+		h.mu.Unlock()
+		return
+	}
 
 	if r.count() == 0 {
 		delete(h.rooms, name)
@@ -129,7 +197,8 @@ func (h *Hub) Leave(client *Client) {
 func (h *Hub) Broadcast(from *Client, raw []byte) {
 	h.mu.Lock()
 	r, ok := h.rooms[from.room]
-	if !ok {
+	// Заменённый клиент мог дочитать что-то из старого сокета.
+	if !ok || !r.has(from) {
 		h.mu.Unlock()
 		return
 	}

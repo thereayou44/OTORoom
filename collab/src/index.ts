@@ -1,4 +1,5 @@
 import * as Y from 'yjs';
+import { Awareness } from 'y-protocols/awareness';
 import { DataChannelProvider } from './provider';
 import { createEditor, type EditorHandle, type Language } from './editor';
 import { createBoard, type BoardHandle, type Tool } from './board';
@@ -15,11 +16,16 @@ export interface BoardHooks {
 
 export interface Collab {
   readonly doc: Y.Doc;
-  readonly provider: DataChannelProvider;
+  /** null, пока собеседник переподключается. */
+  readonly provider: DataChannelProvider | null;
   mountEditor(container: HTMLElement, language?: Language): EditorHandle;
   /** Колбэки нужны панели инструментов снаружи: доска сама меняет инструмент
       после вставки картинки, а страницу может пролистать собеседник. */
   mountBoard(container: HTMLElement, hooks?: BoardHooks): BoardHandle;
+  /** Тот же документ к новому каналу — Yjs сам досинхронизирует. */
+  attach(channel: RTCDataChannel): void;
+  /** Отключиться от канала, сохранив документ. */
+  detach(): void;
   onSynced(cb: () => void): void;
   /** Сколько участников сейчас в документе, включая себя. */
   peers(): number;
@@ -32,24 +38,26 @@ export interface Collab {
  */
 export function createCollab(channel: RTCDataChannel, opts: CollabOptions = {}): Collab {
   const doc = new Y.Doc();
-  const provider = new DataChannelProvider(doc, channel, opts);
+  // Один на весь документ: редактор и доска держат на него ссылку.
+  const awareness = new Awareness(doc);
 
+  const connect = (ch: RTCDataChannel) =>
+    new DataChannelProvider(doc, ch, { ...opts, awareness });
+
+  let provider: DataChannelProvider | null = connect(channel);
   let editor: EditorHandle | null = null;
   let board: BoardHandle | null = null;
 
   return {
     doc,
-    provider,
+    get provider() {
+      return provider;
+    },
 
     mountEditor(container, language) {
       // Второй вызов на том же контейнере не должен плодить редакторы.
       editor?.destroy();
-      editor = createEditor({
-        doc,
-        awareness: provider.awareness,
-        container,
-        language,
-      });
+      editor = createEditor({ doc, awareness, container, language });
       return editor;
     },
 
@@ -57,7 +65,7 @@ export function createCollab(channel: RTCDataChannel, opts: CollabOptions = {}):
       board?.destroy();
       board = createBoard({
         doc,
-        awareness: provider.awareness,
+        awareness,
         container,
         onToolChange: hooks?.onToolChange,
         onPagesChange: hooks?.onPagesChange,
@@ -65,18 +73,30 @@ export function createCollab(channel: RTCDataChannel, opts: CollabOptions = {}):
       return board;
     },
 
+    attach(ch) {
+      provider?.destroy();
+      provider = connect(ch);
+    },
+
+    detach() {
+      provider?.destroy();
+      provider = null;
+    },
+
     onSynced(cb) {
-      provider.onSynced(cb);
+      provider?.onSynced(cb);
     },
 
     peers() {
-      return provider.awareness.getStates().size;
+      return awareness.getStates().size;
     },
 
     destroy() {
       editor?.destroy();
       board?.destroy();
-      provider.destroy();
+      provider?.destroy();
+      provider = null;
+      awareness.destroy();
       doc.destroy();
     },
   };
