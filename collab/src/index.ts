@@ -16,19 +16,15 @@ export interface BoardHooks {
 
 export interface Collab {
   readonly doc: Y.Doc;
-  /** Текущий провайдер; null, пока канала нет (собеседник переподключается). */
+  /** null, пока собеседник переподключается. */
   readonly provider: DataChannelProvider | null;
   mountEditor(container: HTMLElement, language?: Language): EditorHandle;
   /** Колбэки нужны панели инструментов снаружи: доска сама меняет инструмент
       после вставки картинки, а страницу может пролистать собеседник. */
   mountBoard(container: HTMLElement, hooks?: BoardHooks): BoardHandle;
-  /**
-   * Подключает тот же документ к новому каналу. Собеседник перезагрузил
-   * страницу или сменил сеть — канал новый, а код, доска и вывод остаются:
-   * Yjs сам досинхронизирует то, чего у другой стороны нет.
-   */
+  /** Тот же документ к новому каналу — Yjs сам досинхронизирует. */
   attach(channel: RTCDataChannel): void;
-  /** Отключает от канала, но документ, редактор и доску не трогает. */
+  /** Отключиться от канала, сохранив документ. */
   detach(): void;
   onSynced(cb: () => void): void;
   /** Сколько участников сейчас в документе, включая себя. */
@@ -42,8 +38,7 @@ export interface Collab {
  */
 export function createCollab(channel: RTCDataChannel, opts: CollabOptions = {}): Collab {
   const doc = new Y.Doc();
-  // Один awareness на весь срок жизни документа, а не на канал: редактор и
-  // доска держат на него ссылку, и при смене канала их не пересоздаём.
+  // Один на весь документ: редактор и доска держат на него ссылку.
   const awareness = new Awareness(doc);
 
   const connect = (ch: RTCDataChannel) =>
