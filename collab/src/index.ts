@@ -2,6 +2,7 @@ import * as Y from 'yjs';
 import { DataChannelProvider } from './provider';
 import { createEditor, type EditorHandle, type Language } from './editor';
 import { createBoard, type BoardHandle, type Tool } from './board';
+import { bindTextarea } from './textarea';
 
 export interface CollabOptions {
   name?: string;
@@ -20,6 +21,8 @@ export interface Collab {
   /** Колбэки нужны панели инструментов снаружи: доска сама меняет инструмент
       после вставки картинки, а страницу может пролистать собеседник. */
   mountBoard(container: HTMLElement, hooks?: BoardHooks): BoardHandle;
+  /** Общий текст в обычном textarea. Отвязывается сам в destroy(). */
+  bindTextarea(textarea: HTMLTextAreaElement, key: string): () => void;
   onSynced(cb: () => void): void;
   /** Сколько участников сейчас в документе, включая себя. */
   peers(): number;
@@ -36,6 +39,7 @@ export function createCollab(channel: RTCDataChannel, opts: CollabOptions = {}):
 
   let editor: EditorHandle | null = null;
   let board: BoardHandle | null = null;
+  const unbinds = new Set<() => void>();
 
   return {
     doc,
@@ -65,6 +69,13 @@ export function createCollab(channel: RTCDataChannel, opts: CollabOptions = {}):
       return board;
     },
 
+    bindTextarea(textarea, key) {
+      const off = bindTextarea(doc.getText(key), textarea);
+      const unbind = () => { off(); unbinds.delete(unbind); };
+      unbinds.add(unbind);
+      return unbind;
+    },
+
     onSynced(cb) {
       provider.onSynced(cb);
     },
@@ -74,6 +85,7 @@ export function createCollab(channel: RTCDataChannel, opts: CollabOptions = {}):
     },
 
     destroy() {
+      unbinds.forEach((u) => u());
       editor?.destroy();
       board?.destroy();
       provider.destroy();

@@ -93,6 +93,50 @@ try {
   ok(false, 'доска: ' + e.message);
 }
 
+// Поле ввода программы общее.
+try {
+  const doc = window.document;
+  const ta = doc.createElement('textarea'), tb = doc.createElement('textarea');
+  doc.body.append(ta, tb);
+  const type = (t, value) => { t.value = value; t.dispatchEvent(new window.Event('input')); };
+  const tick = () => new Promise(r => setTimeout(r, 100));
+
+  a.bindTextarea(ta, 'stdin');
+  const unbindB = b.bindTextarea(tb, 'stdin');
+
+  type(ta, '3\n1 2 3');
+  await tick();
+  ok(tb.value === '3\n1 2 3', 'ввод доехал до собеседника');
+
+  // Каретка B после «3\n», A дописывает строку в начало.
+  tb.focus();
+  tb.setSelectionRange(2, 2);
+  type(ta, '# тест\n3\n1 2 3');
+  await tick();
+  ok(tb.value === '# тест\n3\n1 2 3', 'правка в начале доехала');
+  ok(tb.selectionStart === 9 && tb.selectionEnd === 9, `каретка сдвинулась вместе с текстом (${tb.selectionStart})`);
+
+  // Оба печатают, не дожидаясь друг друга.
+  type(ta, ta.value + '\nA');
+  type(tb, 'B\n' + tb.value);
+  await tick();
+  ok(ta.value === tb.value, 'одновременный ввод сошёлся');
+  ok(ta.value.startsWith('B\n') && ta.value.endsWith('\nA'), `и ничего не потерялось (${JSON.stringify(ta.value)})`);
+
+  type(ta, ta.value + '😀');
+  await tick();
+  type(ta, ta.value.replace('😀', '😃'));
+  await tick();
+  ok(tb.value.endsWith('😃'), 'эмодзи не ломается при замене');
+
+  unbindB();
+  type(ta, 'после отвязки');
+  await tick();
+  ok(tb.value !== 'после отвязки', 'отвязанное поле больше не меняется');
+} catch (e) {
+  ok(false, 'поле ввода: ' + e.message);
+}
+
 a.destroy(); b.destroy();
 console.log(fail === 0 ? '\nБАНДЛ РАБОТАЕТ' : `\nПРОВАЛОВ: ${fail}`);
 process.exit(fail ? 1 : 0);
